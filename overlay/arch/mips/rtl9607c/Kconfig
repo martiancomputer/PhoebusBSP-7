@@ -1,0 +1,260 @@
+#
+# Realtek Semiconductor Corp.
+#
+# RLX Linux Kernel Configuration
+#
+# Tony Wu (tonywu@realtek.com)
+# Dec. 07, 2008
+#
+
+source "arch/mips/rtl9607c/config.top"
+
+choice
+	prompt "Realtek MIPS based SoC"
+	depends on RTK_MIPS_SOC
+
+config RTK_SOC_RTL8198D
+	bool "Realtek RTL8198D SoC"
+	select ARCH_HAS_PHYS_TO_DMA
+	select CPU_SUPPORTS_32BIT_KERNEL
+	select SYS_HAS_CPU_MIPS32_R2
+	select SYS_HAS_EARLY_PRINTK
+	select SYS_SUPPORTS_32BIT_KERNEL
+	select SYS_SUPPORTS_BIG_ENDIAN
+	select CPU_MIPSR2_IRQ_VI if SOC_ENABLE_IRQ_VI
+	select CPU_MIPSR2_IRQ_EI if SOC_ENABLE_IRQ_EI
+	select HW_HAS_USB if SOC_ENABLE_USB
+	select SMP if SOC_ENABLE_SMP
+	select DMA_NONCOHERENT
+	select CPU_HAS_FPU if SOC_ENABLE_FPU
+	select HARDWARE_WATCHPOINTS if SOC_ENABLE_WATCH
+	select HAS_DMA
+	select USE_OF if SOC_ENABLE_OF
+	select BUILTIN_DTB if SOC_ENABLE_BUILTIN_DTB
+	select CPU_HAS_L2C if SOC_ENABLE_L2C
+        select RTK_DEV_AP
+	select RTL8672
+	select RTL9607C
+	select CPU_HAS_WB
+	select GPIOLIB_IRQCHIP
+	select COMMON_CLK_RTK_APRO
+	select MIPS_DISABLE_VDSO if !SOC_ENABLE_MIPS_VDSO
+	select MIPS_CPU_SCACHE
+
+config RTK_SOC_RTL9607C
+	bool "Realtek RTL9607C SoC"
+	select ARCH_HAS_PHYS_TO_DMA
+	select CPU_SUPPORTS_32BIT_KERNEL
+	select SYS_HAS_CPU_MIPS32_R2
+	select SYS_HAS_EARLY_PRINTK
+	select SYS_SUPPORTS_32BIT_KERNEL
+	select SYS_SUPPORTS_BIG_ENDIAN
+	select CPU_MIPSR2_IRQ_VI if SOC_ENABLE_IRQ_VI
+	select CPU_MIPSR2_IRQ_EI if SOC_ENABLE_IRQ_EI
+	select HW_HAS_USB if SOC_ENABLE_USB
+	select SMP if SOC_ENABLE_SMP
+	select DMA_NONCOHERENT
+	select CPU_HAS_FPU if SOC_ENABLE_FPU
+	select HARDWARE_WATCHPOINTS if SOC_ENABLE_WATCH
+	select HAS_DMA
+	select USE_OF if SOC_ENABLE_OF
+	select BUILTIN_DTB if SOC_ENABLE_BUILTIN_DTB
+	select CPU_HAS_L2C if SOC_ENABLE_L2C
+	select RTL8672
+	select RTL9607C
+	select CPU_HAS_WB
+	select GPIOLIB_IRQCHIP
+	select COMMON_CLK_RTK_APRO
+	select MIPS_DISABLE_VDSO if !SOC_ENABLE_MIPS_VDSO
+	select MIPS_CPU_SCACHE
+
+endchoice
+
+config RTK_DEV_AP
+        bool "Realtek Device type Wifi AP"
+        help
+          This product is designed for Wifi AP.
+
+config RTK_DEV_APROUTER_ONLY
+	bool "AP-Router only"
+	default n
+	help
+          AP-Router Only
+
+config USB_9607C_EHCI2
+    bool "Enable 2nd EHCI controller on 9607C"
+    depends on RTL9607C
+    default n
+    help
+      Enables 2nd EHCI(EHCI2) controller on RTL9607C platform. Only one of XHCI/EHCI2 can be used.
+      This option overwrites XHCI.
+
+config RTK_USB_TEST
+	bool "Enable USB Test"
+	default y
+	help
+	Create entries under /sys/bus/usb/devices/usbX for USB test (i.e. test packet)
+
+config RTL8672
+        bool
+
+config SOC_TIMER
+	bool "Use SOC Timer"
+	depends on RTL9607C
+	select TIMER_OF
+    default y if RTL9603CVD_SERIES
+    help
+      Enable SOC Timer for clockevent and clocksource.
+      This should be used if CPU clock is expected to changed dynamically.
+
+config RTL9607C
+        bool
+		select CPU_HAS_DSP
+config RTK_LED_V074
+        bool "Support V074 board led gpio"
+	default n
+#
+# CPU
+#
+config CPU_MIPS4K
+	bool
+	default y if SOC_CPU_MIPS4K
+
+config CPU_MIPS24K
+	bool
+	default y if SOC_CPU_MIPS24K
+	select CPU_HAS_TLS
+
+config CPU_MIPS34K
+	bool
+	default y if SOC_CPU_MIPS34K
+	select CPU_HAS_TLS
+	select SYS_SUPPORTS_MULTITHREADING
+	select MIPS_MT_SMP if SOC_ENABLE_SMP
+
+config CPU_MIPS74K
+	bool
+	default y if SOC_CPU_MIPS74K
+	select CPU_HAS_TLS
+
+config CPU_MIPS1004K
+	bool
+	default y if SOC_CPU_MIPS1004K
+	select CPU_HAS_TLS
+	select SYS_SUPPORTS_SMP
+	select SYS_SUPPORTS_MULTITHREADING
+	select SYS_SUPPORTS_MIPS_CPS
+	select MIPS_GIC
+	select MIPS_CPS if SOC_ENABLE_CPS
+	select MIPS_MT_SMP if SOC_ENABLE_MT
+	select WEAK_REORDERING_BEYOND_LLSC
+	select CLKSRC_MIPS_GIC
+	select COMMON_CLK
+
+config CPU_MIPS1074K
+	bool
+	default y if SOC_CPU_MIPS1074K
+	select CPU_HAS_TLS
+	select SYS_SUPPORTS_SMP
+	select SYS_SUPPORTS_MIPS_CPS
+	select MIPS_GIC
+	select MIPS_CPS if SOC_ENABLE_CPS
+	select WEAK_REORDERING_BEYOND_LLSC
+	select CLKSRC_MIPS_GIC
+	select COMMON_CLK
+
+config CPU_MIPSIA
+	bool
+	default y if SOC_CPU_MIPSIA
+	select CPU_HAS_TLS
+	select SYS_SUPPORTS_SMP
+	select SYS_SUPPORTS_MULTITHREADING
+	select SYS_SUPPORTS_MIPS_CPS
+	select MIPS_GIC
+	select MIPS_CPS if SOC_ENABLE_CPS
+	select MIPS_MT_SMP if SOC_ENABLE_MT
+	select WEAK_REORDERING_BEYOND_LLSC
+	select CLKSRC_MIPS_GIC if !SOC_TIMER
+	select COMMON_CLK
+
+config CPU_RLX4181
+	bool
+	default y if SOC_CPU_RLX4181
+
+config CPU_RLX5181
+	bool
+	default y if SOC_CPU_RLX5181
+	select CPU_HAS_CLS
+
+config CPU_RLX4281
+	bool
+	default y if SOC_CPU_RLX4281 || SOC_CPU_RLX4381
+	default y if SOC_CPU_RLX4271 || SOC_CPU_RLX4371
+	select CPU_HAS_TLS
+	select SYS_SUPPORTS_SMP if SOC_ENABLE_SMP
+
+config CPU_RLX5281
+	bool
+	default y if SOC_CPU_RLX5281 || SOC_CPU_RLX5381
+	default y if SOC_CPU_RLX5271 || SOC_CPU_RLX5371
+	select CPU_HAS_CLS
+	select CPU_HAS_TLS
+	select SYS_SUPPORTS_SMP if SOC_ENABLE_SMP
+
+#
+# CPU features
+#
+config CPU_HAS_DSP
+	bool
+
+config CPU_HAS_FPU
+	bool
+
+config CPU_HAS_EMU
+	bool
+
+config CPU_HAS_CLS
+	bool
+
+config CPU_HAS_TLS
+	bool
+
+config CPU_HAS_RADIAX
+	bool
+
+config CPU_HAS_SLEEP
+	bool
+
+#
+# IRQ
+#
+config IRQ_ICTL
+	bool
+
+#
+# CACHE
+#
+config CPU_HAS_SPRAM
+	bool
+
+config CPU_HAS_WBC
+	bool
+	default y
+
+config CPU_HAS_L2C
+	bool
+
+config CPU_HAS_AR7
+	bool
+
+config CPU_HAS_WBIC
+	bool
+	default y if SOC_CACHE_WBIC
+
+#
+# BUS
+#
+config HW_HAS_USB
+	bool
+
+source "arch/mips/rtl9607c/Kconfig.hook"

@@ -1,0 +1,283 @@
+menu "RTK Luna Selection"
+config BOARD_REALTEK_TYPE
+	bool
+
+config SYSTEM_CAPABILITY
+        prompt "System Capability"
+        string
+        default "0;4;2;2;1;1"
+        help
+                System Capability, format FE;GE;VOIP;USB;2.4G;5G
+
+config UNI_CAPABILITY
+	prompt "UNI port Capability"
+	string
+	help
+		UNI port Capability, format is [2/1/0];[2/1/0];[2/1/0];[2/1/0];[2/1/0]
+		GE port is 2, FE port is 1, None is 0
+		The port number should follow CHIP spec. ex. 9607C has 5 uni ports.
+
+config OMCI_CLAIM_UNI_CAPABILITY
+	prompt "OMCI claim UNI port Capability"
+	string
+	default UNI_CAPABILITY
+	help
+		OMCI claim UNI port Capability, format is [2/1/0];[2/1/0];[2/1/0];[2/1/0];[2/1/0]
+		GE port is 2, FE port is 1, None is 0
+		The port number should follow CHIP spec. ex. 9607C has 5 uni ports.
+
+		The purpose of this is providing information about UNI capability
+		to OMCI to report.
+
+config E8B
+        bool "Support for CTC E8B requirement"
+
+config YUEME
+        bool "Support for CTC YueMe requirement"
+        depends on E8B
+
+config CTC_AWIFI_KERNEL_JITUAN
+        bool "Jituan kernel feature"
+        depends on YUEME
+
+config CMCC
+        bool "Support for CMCC requirement"
+
+config CMCC_2023_NEWREQUIREMENT
+        bool "Support for 2023 CMCC requirement"
+        depends on CMCC
+
+config CMCC_ENTERPRISE
+	bool "CMCC  Enterprise Gateway requirement"
+	depends on CMCC
+
+config CU
+        bool "Support for CU requirement"
+
+config CU_BASEON_YUEME
+		bool "CU DBUS firmware based on Yueme"
+		depends on CU
+
+config CU_BASEON_CMCC
+		bool "CU OSGI firmware based on CMCC"
+		depends on CU
+
+config CTC_SDN
+        bool "Support for CTC SDN requirement"
+		depends on E8B
+
+config TELMEX
+		bool "Support for TELMEX requirement"
+		select TELMEX_DEV
+
+config TELMEX_DEV
+		bool "Support for TELMEX DEV requirement"
+		depends on TELMEX
+
+config TRUE
+        bool "Support for TRUE requirement"
+
+config CONTROL_SERIAL_INPUT
+	bool "support control serial input"
+	depends on CTC_SDN
+	default y
+	help
+	support to disable/enable serial input
+
+config JIO
+	bool "Support for JIO requirement"
+
+config MGTS
+	bool "Support for MGTS requirement"
+
+config 00R0
+	bool "Support for rostelecom requirement"
+
+config YUEME_DPI
+        bool "Support for CTC YueMe DPI requirement"
+        depends on YUEME
+
+config CMCC_GBM
+	bool "Support for CMCC Jembench test requirement"
+	depends on CMCC || CU_BASEON_CMCC
+
+config CMCC_GBM_TIME_FACTOR_SETTING
+	bool "Support for CMCC Jembench test requirement:support modify jem time factor"
+	depends on CMCC_GBM
+
+config CMCC_DMIPS
+	bool "CMCC  test requirement"
+	depends on CMCC || CU_BASEON_CMCC
+
+config TELEFONICA
+    bool "Support for TELEFONICA requirement"
+
+config DBUS_FRAMEWORK_PATH
+        prompt "Dbus Framework path"
+        string
+        default "/opt/upt"
+        depends on YUEME || CU_BASEON_YUEME
+
+choice
+        prompt "Flash Size"
+        default 64M_FLASH
+
+config 4M_FLASH
+        bool "4M"
+
+config  8M_FLASH
+        bool "8M"
+
+config  16M_FLASH
+        bool "16M"
+
+config  32M_FLASH
+        bool "32M"
+
+config  48M_FLASH
+        bool "48M"
+
+config  64M_FLASH
+        bool "64M"
+
+endchoice
+
+config FLASH_SIZE
+        hex
+        default "400000" if 4M_FLASH
+        default "800000" if 8M_FLASH
+        default "1000000" if 16M_FLASH
+        default "2000000" if 32M_FLASH
+        default "3000000" if 48M_FLASH
+        default "4000000" if 64M_FLASH
+        default "4000000"
+
+config RTK_SOC
+        bool "RTK SoC Drivers Support"
+        default n
+        help
+          Build drivers/soc/realtek folder.
+
+config RTK_PROC_GPIO_FILES
+        bool "RTK proc gpio files Support"
+        depends on RTK_SOC
+        default n
+        help
+          Build drivers/soc/realtek folder.
+
+choice
+        prompt "LED Style"
+        default GPIO_LED_TR068
+
+config NO_LED_STYLE
+	depends on RTK_PROC_GPIO_FILES
+	bool "no LED Style"
+
+config GPIO_LED_TR068
+        depends on RTK_PROC_GPIO_FILES
+        bool "TR068"
+endchoice
+
+config RTL8672_SW_USB_LED
+        tristate "Support Software USB LED"
+        depends on RTK_PROC_GPIO_FILES
+        depends on USB
+
+config SW_USB_LED0
+        bool "Software USB LED 0"
+        depends on RTK_PROC_GPIO_FILES
+        depends on RTL8672_SW_USB_LED
+
+config SW_USB_LED1
+        bool "Software USB LED 1"
+        depends on RTK_PROC_GPIO_FILES
+        depends on RTL8672_SW_USB_LED
+
+config WIFI_LED_USE_SOC_GPIO
+	bool "Support using SoC gpio for WIFI LED"
+	depends on RTK_PROC_GPIO_FILES
+	default n
+	help
+		WIFI LED.
+
+config  WPS_LED
+        bool "Support WPS LED"
+        default n
+        depends on RTK_PROC_GPIO_FILES
+        #depends on WIFI_SIMPLE_CONFIG
+	help
+		WPS LED Support.
+
+config ONE_WPS_LED
+        bool "Only one WPS LED"
+        depends on WPS_LED
+	help
+		If target board has only one LED, must choose this config.
+
+config RTK_RESET_WPS_SHARE_LED
+	bool "WPS led shared with System led"
+	depends on WPS_LED
+	default n
+	help
+		This config used for the WPS/System share led board.
+
+config RTK_RESET_WPS_SHARE_BUTTON
+	bool "WPS pin shared with RESET button"
+        depends on RTK_PROC_GPIO_FILES
+	default n
+	help
+		This config used for the WPS/RESET share button board.
+
+config PUSHBUTTON_USE_EVENT_HANDLE
+	bool "Support using push button by event handler"
+	select GPIOLIB
+	select GPIO_SYSFS
+	select INPUT
+	select INPUT_POLLDEV
+	select INPUT_EVDEV
+	select INPUT_KEYBOARD
+	select KEYBOARD_GPIO
+
+config KERNEL_STACK_SIZE_ORDER
+	int "Kenel Stack Size Order Configuration"
+	default "2" if RTK_SOC_RTL9607C
+	default "1"
+	help
+	 With Page Size 4K
+	 1 for 8K kenel stack size
+	 2 for 16K kernel stack size
+	 3 for 32K kernel stack size
+	 etc...
+
+config RTK_NIC_RX_POOL
+        bool "RTK NIC RX Pool Support"
+        default n
+        help
+          This enables kernel support for NI driver rx pool function.
+          If you would like to have NI driver rx pool support, say 'Y'.
+
+config RTK_NIC_HWLOOKUP_DEAMSDU_OFFLOAD
+        bool "RTK NIC HWLOOKUP deamsdu offload"
+        default n
+        help
+          This enables kernel support for NI driver tx offloading WNIC deamsdu function.
+          If you would like to have WNIC do not deamsdu and pass to NIC tx, say 'Y'.
+
+config RTK_NIC_HWLOOKUP_SNAP_TRANSFORM_BY_TX_DESC
+        bool "RTK NIC HWLOOKUP snap transform by tx desc"
+        depends on RTK_NIC_HWLOOKUP_DEAMSDU_OFFLOAD
+        default n
+        help
+          This enables kernel support for NI driver tx offloading WNIC snap packets.
+          If you would like to have NIC tx with two desc without memmove, say 'Y'.
+
+config DEFAULT_CONSOLE_OFF
+	bool "Default close console"
+	depends on RTL9607C_SERIES
+	default n
+
+config RTK_USE_TIMER_MIN_ADJUST
+	bool "Enable Kernel GENERIC_CLOCKEVENTS_MIN_ADJUST"
+	default y
+
+endmenu

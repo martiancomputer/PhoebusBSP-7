@@ -1,0 +1,4739 @@
+--- a/arch/mips/boot/dts/realtek/Makefile
++++ b/arch/mips/boot/dts/realtek/Makefile
+@@ -1,3 +1,21 @@
+ # SPDX-License-Identifier: GPL-2.0
+ dtb-$(CONFIG_MACH_REALTEK_RTL)	+= cisco_sg220-26.dtb
+ dtb-$(CONFIG_MACH_REALTEK_RTL)	+= cameo-rtl9302c-2x-rtl8224-2xge.dtb
++
++# Luna SoCs: exactly one board dtb may be enabled — with BUILTIN_DTB_ALL the
++# generic kbuild wrapper links every dtb-y into .dtb.init.rodata, and the
++# platform code boots from __dtb_start (the first one).
++dtb-$(CONFIG_RTK_SOC_RTL8198D)	+= rtl8198d_engboard.dtb
++dtb-$(CONFIG_RTK_SOC_RTL9607C)	+= rtl9607c_engboard.dtb
++
++ifneq ($(CONFIG_RTK_MIPS_SOC),)
++ifeq ($(CONFIG_LUNA_MEMORY_AUTO_DETECTION),y)
++$(shell cd $(srctree)/arch/mips/boot/dts/realtek; \
++	ln -f -s memory-16.dts memory/memory.dts; \
++	ln -f -s memory/memory.dts memory.dts)
++else
++$(shell cd $(srctree)/arch/mips/boot/dts/realtek; \
++	ln -f -s memory-$(CONFIG_SOC_MEM_SIZE).dts memory/memory.dts; \
++	ln -f -s memory/memory.dts memory.dts)
++endif
++endif
+--- a/arch/mips/include/uapi/asm/socket.h
++++ b/arch/mips/include/uapi/asm/socket.h
+@@ -190,4 +190,8 @@
+ 
+ #endif
+ 
++/* for CONFIG_SOCK_RCVMARK: SO_RCVMARK is mainline (75) in 6.18; keep only
++ * the vendor-specific SO_MARK2. */
++#define SO_MARK2                102
++
+ #endif /* _UAPI_ASM_SOCKET_H */
+--- a/arch/mips/Kbuild.platforms
++++ b/arch/mips/Kbuild.platforms
+@@ -22,6 +22,7 @@
+ platform-$(CONFIG_MACH_NINTENDO64)	+= n64/
+ platform-$(CONFIG_PIC32MZDA)		+= pic32/
+ platform-$(CONFIG_RALINK)		+= ralink/
++platform-$(CONFIG_RTK_SOC_RTL9607C)	+= rtl9607c/
+ platform-$(CONFIG_MIKROTIK_RB532)	+= rb532/
+ platform-$(CONFIG_SGI_IP22)		+= sgi-ip22/
+ platform-$(CONFIG_SGI_IP27)		+= sgi-ip27/
+--- a/arch/mips/Kconfig
++++ b/arch/mips/Kconfig
+@@ -142,6 +142,18 @@
+ 	prompt "System type"
+ 	default MIPS_GENERIC_KERNEL
+ 
++config RTK_MIPS_SOC
++	bool "Realtek MIPS series SoCs"
++	select BOOT_ELF32
++	select SYS_HAS_EARLY_PRINTK
++	select SYS_SUPPORTS_ARBIT_HZ
++	select SYS_SUPPORTS_HIGHMEM
++	select SYS_SUPPORTS_32BIT_KERNEL
++	select SYS_SUPPORTS_ZBOOT
++	select CPU_SUPPORTS_32BIT_KERNEL
++	select IRQ_MIPS_CPU
++	select HAVE_PCI
++
+ config MIPS_GENERIC_KERNEL
+ 	bool "Generic board-agnostic MIPS kernel"
+ 	select MIPS_GENERIC
+@@ -1072,6 +1084,8 @@
+ source "arch/mips/mobileye/Kconfig"
+ source "arch/mips/pic32/Kconfig"
+ source "arch/mips/ralink/Kconfig"
++source "arch/mips/rtl9607c/Kconfig"
++source "arch/mips/Kconfig.hook"
+ source "arch/mips/sgi-ip27/Kconfig"
+ source "arch/mips/sibyte/Kconfig"
+ source "arch/mips/txx9/Kconfig"
+--- /dev/null
++++ b/arch/mips/Kconfig.hook
+@@ -0,0 +1,283 @@
++menu "RTK Luna Selection"
++config BOARD_REALTEK_TYPE
++	bool
++
++config SYSTEM_CAPABILITY
++        prompt "System Capability"
++        string
++        default "0;4;2;2;1;1"
++        help
++                System Capability, format FE;GE;VOIP;USB;2.4G;5G
++
++config UNI_CAPABILITY
++	prompt "UNI port Capability"
++	string
++	help
++		UNI port Capability, format is [2/1/0];[2/1/0];[2/1/0];[2/1/0];[2/1/0]
++		GE port is 2, FE port is 1, None is 0
++		The port number should follow CHIP spec. ex. 9607C has 5 uni ports.
++
++config OMCI_CLAIM_UNI_CAPABILITY
++	prompt "OMCI claim UNI port Capability"
++	string
++	default UNI_CAPABILITY
++	help
++		OMCI claim UNI port Capability, format is [2/1/0];[2/1/0];[2/1/0];[2/1/0];[2/1/0]
++		GE port is 2, FE port is 1, None is 0
++		The port number should follow CHIP spec. ex. 9607C has 5 uni ports.
++
++		The purpose of this is providing information about UNI capability
++		to OMCI to report.
++
++config E8B
++        bool "Support for CTC E8B requirement"
++
++config YUEME
++        bool "Support for CTC YueMe requirement"
++        depends on E8B
++
++config CTC_AWIFI_KERNEL_JITUAN
++        bool "Jituan kernel feature"
++        depends on YUEME
++
++config CMCC
++        bool "Support for CMCC requirement"
++
++config CMCC_2023_NEWREQUIREMENT
++        bool "Support for 2023 CMCC requirement"
++        depends on CMCC
++
++config CMCC_ENTERPRISE
++	bool "CMCC  Enterprise Gateway requirement"
++	depends on CMCC
++
++config CU
++        bool "Support for CU requirement"
++
++config CU_BASEON_YUEME
++		bool "CU DBUS firmware based on Yueme"
++		depends on CU
++
++config CU_BASEON_CMCC
++		bool "CU OSGI firmware based on CMCC"
++		depends on CU
++
++config CTC_SDN
++        bool "Support for CTC SDN requirement"
++		depends on E8B
++
++config TELMEX
++		bool "Support for TELMEX requirement"
++		select TELMEX_DEV
++
++config TELMEX_DEV
++		bool "Support for TELMEX DEV requirement"
++		depends on TELMEX
++
++config TRUE
++        bool "Support for TRUE requirement"
++
++config CONTROL_SERIAL_INPUT
++	bool "support control serial input"
++	depends on CTC_SDN
++	default y
++	help
++	support to disable/enable serial input
++
++config JIO
++	bool "Support for JIO requirement"
++
++config MGTS
++	bool "Support for MGTS requirement"
++
++config 00R0
++	bool "Support for rostelecom requirement"
++
++config YUEME_DPI
++        bool "Support for CTC YueMe DPI requirement"
++        depends on YUEME
++
++config CMCC_GBM
++	bool "Support for CMCC Jembench test requirement"
++	depends on CMCC || CU_BASEON_CMCC
++
++config CMCC_GBM_TIME_FACTOR_SETTING
++	bool "Support for CMCC Jembench test requirement:support modify jem time factor"
++	depends on CMCC_GBM
++
++config CMCC_DMIPS
++	bool "CMCC  test requirement"
++	depends on CMCC || CU_BASEON_CMCC
++
++config TELEFONICA
++    bool "Support for TELEFONICA requirement"
++
++config DBUS_FRAMEWORK_PATH
++        prompt "Dbus Framework path"
++        string
++        default "/opt/upt"
++        depends on YUEME || CU_BASEON_YUEME
++
++choice
++        prompt "Flash Size"
++        default 64M_FLASH
++
++config 4M_FLASH
++        bool "4M"
++
++config  8M_FLASH
++        bool "8M"
++
++config  16M_FLASH
++        bool "16M"
++
++config  32M_FLASH
++        bool "32M"
++
++config  48M_FLASH
++        bool "48M"
++
++config  64M_FLASH
++        bool "64M"
++
++endchoice
++
++config FLASH_SIZE
++        hex
++        default "400000" if 4M_FLASH
++        default "800000" if 8M_FLASH
++        default "1000000" if 16M_FLASH
++        default "2000000" if 32M_FLASH
++        default "3000000" if 48M_FLASH
++        default "4000000" if 64M_FLASH
++        default "4000000"
++
++config RTK_SOC
++        bool "RTK SoC Drivers Support"
++        default n
++        help
++          Build drivers/soc/realtek folder.
++
++config RTK_PROC_GPIO_FILES
++        bool "RTK proc gpio files Support"
++        depends on RTK_SOC
++        default n
++        help
++          Build drivers/soc/realtek folder.
++
++choice
++        prompt "LED Style"
++        default GPIO_LED_TR068
++
++config NO_LED_STYLE
++	depends on RTK_PROC_GPIO_FILES
++	bool "no LED Style"
++
++config GPIO_LED_TR068
++        depends on RTK_PROC_GPIO_FILES
++        bool "TR068"
++endchoice
++
++config RTL8672_SW_USB_LED
++        tristate "Support Software USB LED"
++        depends on RTK_PROC_GPIO_FILES
++        depends on USB
++
++config SW_USB_LED0
++        bool "Software USB LED 0"
++        depends on RTK_PROC_GPIO_FILES
++        depends on RTL8672_SW_USB_LED
++
++config SW_USB_LED1
++        bool "Software USB LED 1"
++        depends on RTK_PROC_GPIO_FILES
++        depends on RTL8672_SW_USB_LED
++
++config WIFI_LED_USE_SOC_GPIO
++	bool "Support using SoC gpio for WIFI LED"
++	depends on RTK_PROC_GPIO_FILES
++	default n
++	help
++		WIFI LED.
++
++config  WPS_LED
++        bool "Support WPS LED"
++        default n
++        depends on RTK_PROC_GPIO_FILES
++        #depends on WIFI_SIMPLE_CONFIG
++	help
++		WPS LED Support.
++
++config ONE_WPS_LED
++        bool "Only one WPS LED"
++        depends on WPS_LED
++	help
++		If target board has only one LED, must choose this config.
++
++config RTK_RESET_WPS_SHARE_LED
++	bool "WPS led shared with System led"
++	depends on WPS_LED
++	default n
++	help
++		This config used for the WPS/System share led board.
++
++config RTK_RESET_WPS_SHARE_BUTTON
++	bool "WPS pin shared with RESET button"
++        depends on RTK_PROC_GPIO_FILES
++	default n
++	help
++		This config used for the WPS/RESET share button board.
++
++config PUSHBUTTON_USE_EVENT_HANDLE
++	bool "Support using push button by event handler"
++	select GPIOLIB
++	select GPIO_SYSFS
++	select INPUT
++	select INPUT_POLLDEV
++	select INPUT_EVDEV
++	select INPUT_KEYBOARD
++	select KEYBOARD_GPIO
++
++config KERNEL_STACK_SIZE_ORDER
++	int "Kenel Stack Size Order Configuration"
++	default "2" if RTK_SOC_RTL9607C
++	default "1"
++	help
++	 With Page Size 4K
++	 1 for 8K kenel stack size
++	 2 for 16K kernel stack size
++	 3 for 32K kernel stack size
++	 etc...
++
++config RTK_NIC_RX_POOL
++        bool "RTK NIC RX Pool Support"
++        default n
++        help
++          This enables kernel support for NI driver rx pool function.
++          If you would like to have NI driver rx pool support, say 'Y'.
++
++config RTK_NIC_HWLOOKUP_DEAMSDU_OFFLOAD
++        bool "RTK NIC HWLOOKUP deamsdu offload"
++        default n
++        help
++          This enables kernel support for NI driver tx offloading WNIC deamsdu function.
++          If you would like to have WNIC do not deamsdu and pass to NIC tx, say 'Y'.
++
++config RTK_NIC_HWLOOKUP_SNAP_TRANSFORM_BY_TX_DESC
++        bool "RTK NIC HWLOOKUP snap transform by tx desc"
++        depends on RTK_NIC_HWLOOKUP_DEAMSDU_OFFLOAD
++        default n
++        help
++          This enables kernel support for NI driver tx offloading WNIC snap packets.
++          If you would like to have NIC tx with two desc without memmove, say 'Y'.
++
++config DEFAULT_CONSOLE_OFF
++	bool "Default close console"
++	depends on RTL9607C_SERIES
++	default n
++
++config RTK_USE_TIMER_MIN_ADJUST
++	bool "Enable Kernel GENERIC_CLOCKEVENTS_MIN_ADJUST"
++	default y
++
++endmenu
+--- a/arch/mips/kernel/mips-cm.c
++++ b/arch/mips/kernel/mips-cm.c
+@@ -14,6 +14,7 @@
+ #include <asm/mipsregs.h>
+ 
+ void __iomem *mips_gcr_base;
++EXPORT_SYMBOL(mips_gcr_base);
+ void __iomem *mips_cm_l2sync_base;
+ int mips_cm_is64;
+ bool mips_cm_is_l2_hci_broken;
+--- a/arch/mips/mm/cache.c
++++ b/arch/mips/mm/cache.c
+@@ -80,6 +80,10 @@
+ void (*_dma_cache_wback)(unsigned long start, unsigned long size);
+ void (*_dma_cache_inv)(unsigned long start, unsigned long size);
+ 
++EXPORT_SYMBOL(_dma_cache_wback_inv);
++EXPORT_SYMBOL(_dma_cache_wback);
++EXPORT_SYMBOL(_dma_cache_inv);
++
+ #endif /* CONFIG_DMA_NONCOHERENT */
+ 
+ /*
+--- a/arch/mips/rtl9607c/cevt-ext.c
++++ b/arch/mips/rtl9607c/cevt-ext.c
+@@ -39,6 +39,7 @@
+ 	void __iomem *base;
+ 	struct clock_event_device dev;
+ 	raw_spinlock_t lock;
++	bool irq_requested;
+ };
+ 
+ static u32 tick_div;
+@@ -46,9 +47,9 @@
+ static u32 hw_timer_used_idx = 0;
+ static DEFINE_PER_CPU(struct rtk_cevt_device, rtk_cdev);
+ 
+-static cycle_t rtk_timer_read(struct clocksource *cs)
++static u64 rtk_timer_read(struct clocksource *cs)
+ {
+-	return (cycle_t)rtk_csrc_base->tc_value;
++	return (u64)rtk_csrc_base->tc_value;
+ }
+ 
+ static u64 notrace rtk_read_sched_clock(void)
+@@ -185,13 +186,6 @@
+ 	return IRQ_HANDLED;
+ }
+ 
+-static struct irqaction rtk_timer_irq = {
+-	.name = "rtk-tick",
+-	.percpu_dev_id = &rtk_cdev,
+-	.flags = IRQF_TIMER | IRQF_PERCPU,
+-	.handler = rtk_timer_interrupt,
+-};
+-
+ static void rtk_clockevent_setup(struct rtk_cevt_device *cd) {
+ 	int cpu;
+ 
+@@ -211,45 +205,42 @@
+ 	raw_spin_lock_init(&cd->lock);
+ 
+ 	clockevents_config_and_register(&cd->dev, TIMER_FREQ, 0x3, 0xfffffff);
+-
+-	if (!gic_present) {
+-		int ret;
+-		ret = setup_irq(cd->dev.irq, &rtk_timer_irq);
+-		if (ret < 0) {
+-			pr_err("%s: setup irq error\n", __func__);
+-			BUG();
+-		}
+-		irq_set_handler(cd->dev.irq, handle_percpu_irq);
+-	}
+ }
+ 
+-static int rtk_cpu_notifier(struct notifier_block *nb, unsigned long action,
+-				void *data)
++/*
++ * Runs on each CPU as it comes online (and once per already-online CPU
++ * at registration time).  Each CPU owns a dedicated HW timer block whose
++ * GIC shared interrupt is routed to that CPU via the normal affinity API,
++ * replacing the old out-of-tree mips_gic_init_one() hack.
++ */
++static int rtk_timer_online_cpu(unsigned int cpu)
+ {
+-	switch (action & ~CPU_TASKS_FROZEN) {
+-	case CPU_STARTING:
+-		rtk_clockevent_setup(this_cpu_ptr(&rtk_cdev));
+-		break;
+-	case CPU_DYING:
+-		break;
++	struct rtk_cevt_device *cd = per_cpu_ptr(&rtk_cdev, cpu);
++	int ret;
++
++	if (cd->dev.irq && !cd->irq_requested) {
++		ret = request_irq(cd->dev.irq, rtk_timer_interrupt,
++				  IRQF_TIMER | IRQF_NOBALANCING,
++				  "rtk-tick", cd);
++		if (ret) {
++			pr_err(NAME ": cpu%u: request_irq(%d) failed: %d\n",
++			       cpu, cd->dev.irq, ret);
++			return ret;
++		}
++		cd->irq_requested = true;
++		irq_force_affinity(cd->dev.irq, cpumask_of(cpu));
+ 	}
+ 
+-	return NOTIFY_OK;
++	rtk_clockevent_setup(cd);
++	return 0;
+ }
+ 
+-static struct notifier_block rtk_cpu_nb = {
+-	.notifier_call = rtk_cpu_notifier,
+-};
+-
+-extern void mips_gic_init_one(unsigned int intr, int cpu,
+-				    struct irqaction *action);
+-
+ static void __init rtk_clocksource_of_init(struct device_node *node)
+ {
+ 	struct clk *clk;
+ 	int cpu, ret;
+ 	u64 size;
+-	const u32 *addr;
++	const __be32 *addr;
+ 	unsigned int flags;
+ 	void __iomem *mem;
+ 
+@@ -268,13 +259,13 @@
+ 
+ 	addr = of_get_address(node, hw_timer_used_idx, &size, &flags);
+ 	if (addr) {
+-		mem = ioremap(*addr,size);
+-		pr_info(NAME": %xh map to %p\n", *addr, mem);
++		mem = ioremap(be32_to_cpu(*addr), size);
++		pr_info(NAME": %xh map to %p\n", be32_to_cpu(*addr), mem);
+ 		if (mem) {
+ 
+ 			rtk_clocksource_setup(mem, RTK_CLOCK_DEFAULT_FACTOR);
+ 		} else {
+-			pr_err(NAME ": fail to map %x\n", *addr);
++			pr_err(NAME ": fail to map %x\n", be32_to_cpu(*addr));
+ 			return;
+ 		}
+ 	} else {
+@@ -283,12 +274,8 @@
+ 	}
+ 	hw_timer_used_idx++;
+ 
+-	ret = register_cpu_notifier(&rtk_cpu_nb);
+-	if (ret < 0)
+-		pr_warn(NAME ": Unable to register CPU notifier\n");
+-
+ 	for_each_possible_cpu(cpu) {
+-		int hwirq,irq;
++		int irq;
+ 		struct rtk_cevt_device *d;
+ 
+ 		if (cpu >= CONFIG_NR_CPUS)
+@@ -301,27 +288,26 @@
+ 		}
+ 
+ 		irq = irq_of_parse_and_map(node, hw_timer_used_idx);
+-		hwirq = irq_to_desc(irq)->irq_data.hwirq;
+-
+ 
+ 		d = per_cpu_ptr(&rtk_cdev, cpu);
+ 
+-		d->base = ioremap(*addr,size);
+-		pr_info(NAME": %xh map to %p\n", *addr, d->base);
++		d->base = ioremap(be32_to_cpu(*addr), size);
++		pr_info(NAME": %xh map to %p\n", be32_to_cpu(*addr), d->base);
+ 		if (!d->base) {
+-			pr_err(NAME ": fail to map %x\n", *addr);
++			pr_err(NAME ": fail to map %x\n", be32_to_cpu(*addr));
+ 			return;
+ 		}
+ 
+ 		d->dev.irq = irq;
+-		if (gic_present)
+-			mips_gic_init_one(hwirq, cpu, &rtk_timer_irq);
+-
+ 		hw_timer_used_idx++;
+ 	}
+ 
+ 	pr_info(NAME ": %d hw timer used\n", hw_timer_used_idx);
+-	rtk_clockevent_setup(this_cpu_ptr(&rtk_cdev));
++
++	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "rtktimer:online",
++				rtk_timer_online_cpu, NULL);
++	if (ret < 0)
++		pr_warn(NAME ": failed to register cpuhp callback\n");
+ }
+ 
+ /* unfortunately irq-mips-gic does not provide means to setup IRQ to VPE on initilaization, add the follwowing to irq-mips-gic */
+@@ -351,7 +337,7 @@
+ 
+ */
+ 
+-CLOCKSOURCE_OF_DECLARE(rtk_timer, "rtk,soc-timer",
++TIMER_OF_DECLARE(rtk_timer, "rtk,soc-timer",
+ 		       rtk_clocksource_of_init);
+ 
+ /* sample dt-binding
+--- a/arch/mips/rtl9607c/Kconfig
++++ b/arch/mips/rtl9607c/Kconfig
+@@ -15,7 +15,6 @@
+ 
+ config RTK_SOC_RTL8198D
+ 	bool "Realtek RTL8198D SoC"
+-	select ARCH_WANT_OPTIONAL_GPIOLIB
+ 	select ARCH_HAS_PHYS_TO_DMA
+ 	select CPU_SUPPORTS_32BIT_KERNEL
+ 	select SYS_HAS_CPU_MIPS32_R2
+@@ -24,7 +23,6 @@
+ 	select SYS_SUPPORTS_BIG_ENDIAN
+ 	select CPU_MIPSR2_IRQ_VI if SOC_ENABLE_IRQ_VI
+ 	select CPU_MIPSR2_IRQ_EI if SOC_ENABLE_IRQ_EI
+-	select HW_HAS_PCI if SOC_ENABLE_PCI
+ 	select HW_HAS_USB if SOC_ENABLE_USB
+ 	select SMP if SOC_ENABLE_SMP
+ 	select DMA_NONCOHERENT
+@@ -34,7 +32,6 @@
+ 	select USE_OF if SOC_ENABLE_OF
+ 	select BUILTIN_DTB if SOC_ENABLE_BUILTIN_DTB
+ 	select CPU_HAS_L2C if SOC_ENABLE_L2C
+-	select HW_HAS_PCI
+         select RTK_DEV_AP
+ 	select RTL8672
+ 	select RTL9607C
+@@ -46,7 +43,6 @@
+ 
+ config RTK_SOC_RTL9607C
+ 	bool "Realtek RTL9607C SoC"
+-	select ARCH_WANT_OPTIONAL_GPIOLIB
+ 	select ARCH_HAS_PHYS_TO_DMA
+ 	select CPU_SUPPORTS_32BIT_KERNEL
+ 	select SYS_HAS_CPU_MIPS32_R2
+@@ -55,7 +51,6 @@
+ 	select SYS_SUPPORTS_BIG_ENDIAN
+ 	select CPU_MIPSR2_IRQ_VI if SOC_ENABLE_IRQ_VI
+ 	select CPU_MIPSR2_IRQ_EI if SOC_ENABLE_IRQ_EI
+-	select HW_HAS_PCI if SOC_ENABLE_PCI
+ 	select HW_HAS_USB if SOC_ENABLE_USB
+ 	select SMP if SOC_ENABLE_SMP
+ 	select DMA_NONCOHERENT
+@@ -65,7 +60,6 @@
+ 	select USE_OF if SOC_ENABLE_OF
+ 	select BUILTIN_DTB if SOC_ENABLE_BUILTIN_DTB
+ 	select CPU_HAS_L2C if SOC_ENABLE_L2C
+-	select HW_HAS_PCI
+ 	select RTL8672
+ 	select RTL9607C
+ 	select CPU_HAS_WB
+@@ -107,7 +101,7 @@
+ config SOC_TIMER
+ 	bool "Use SOC Timer"
+ 	depends on RTL9607C
+-	select CLKSRC_OF
++	select TIMER_OF
+     default y if RTL9603CVD_SERIES
+     help
+       Enable SOC Timer for clockevent and clocksource.
+@@ -136,7 +130,6 @@
+ 	default y if SOC_CPU_MIPS34K
+ 	select CPU_HAS_TLS
+ 	select SYS_SUPPORTS_MULTITHREADING
+-	select SYS_SUPPORT_SMP
+ 	select MIPS_MT_SMP if SOC_ENABLE_SMP
+ 
+ config CPU_MIPS74K
+@@ -150,10 +143,8 @@
+ 	select CPU_HAS_TLS
+ 	select SYS_SUPPORTS_SMP
+ 	select SYS_SUPPORTS_MULTITHREADING
+-	select SYS_SUPPORTS_MIPS_CMP
+ 	select SYS_SUPPORTS_MIPS_CPS
+ 	select MIPS_GIC
+-	select MIPS_CMP if SOC_ENABLE_CMP
+ 	select MIPS_CPS if SOC_ENABLE_CPS
+ 	select MIPS_MT_SMP if SOC_ENABLE_MT
+ 	select WEAK_REORDERING_BEYOND_LLSC
+@@ -165,10 +156,8 @@
+ 	default y if SOC_CPU_MIPS1074K
+ 	select CPU_HAS_TLS
+ 	select SYS_SUPPORTS_SMP
+-	select SYS_SUPPORTS_MIPS_CMP
+ 	select SYS_SUPPORTS_MIPS_CPS
+ 	select MIPS_GIC
+-	select MIPS_CMP if SOC_ENABLE_CMP
+ 	select MIPS_CPS if SOC_ENABLE_CPS
+ 	select WEAK_REORDERING_BEYOND_LLSC
+ 	select CLKSRC_MIPS_GIC
+@@ -180,10 +169,8 @@
+ 	select CPU_HAS_TLS
+ 	select SYS_SUPPORTS_SMP
+ 	select SYS_SUPPORTS_MULTITHREADING
+-	select SYS_SUPPORTS_MIPS_CMP
+ 	select SYS_SUPPORTS_MIPS_CPS
+ 	select MIPS_GIC
+-	select MIPS_CMP if SOC_ENABLE_CMP
+ 	select MIPS_CPS if SOC_ENABLE_CPS
+ 	select MIPS_MT_SMP if SOC_ENABLE_MT
+ 	select WEAK_REORDERING_BEYOND_LLSC
+@@ -205,9 +192,6 @@
+ 	default y if SOC_CPU_RLX4271 || SOC_CPU_RLX4371
+ 	select CPU_HAS_TLS
+ 	select SYS_SUPPORTS_SMP if SOC_ENABLE_SMP
+-	select SYS_SUPPORTS_TAROKO_CMP if SOC_ENABLE_SMP
+-	select TAROKO_GIC if SOC_ENABLE_SMP
+-	select TAROKO_CMP if SOC_ENABLE_SMP
+ 
+ config CPU_RLX5281
+ 	bool
+@@ -216,9 +200,6 @@
+ 	select CPU_HAS_CLS
+ 	select CPU_HAS_TLS
+ 	select SYS_SUPPORTS_SMP if SOC_ENABLE_SMP
+-	select SYS_SUPPORTS_TAROKO_CMP if SOC_ENABLE_SMP
+-	select TAROKO_GIC if SOC_ENABLE_SMP
+-	select TAROKO_CMP if SOC_ENABLE_SMP
+ 
+ #
+ # CPU features
+--- a/arch/mips/rtl9607c/luna_watchdog.c
++++ b/arch/mips/rtl9607c/luna_watchdog.c
+@@ -58,7 +58,7 @@
+ #define DEBUG_RTK_WDT
+ #ifdef DEBUG_RTK_WDT
+ static unsigned int _debug_rtk_wdt_ = (_DEBUG_RTK_WDT_ALWAYS_);//|DEBUG_READ|DEBUG_WRITE|DEBUG_ERASE);
+-static int debug_mask = 1;
++static int debug_mask = 0;	/* 6.18: silence per-kick console spam */
+ #define DEBUG_RTK_WDT_PRINT(mask, string) \
+             if ((_debug_rtk_wdt_ & mask) || (mask == _DEBUG_RTK_WDT_ALWAYS_)) \
+             printk string
+--- a/arch/mips/rtl9607c/pci.c
++++ b/arch/mips/rtl9607c/pci.c
+@@ -5,6 +5,10 @@
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/irqdomain.h>
++#include <linux/interrupt.h>
++#include <dt-bindings/interrupt-controller/mips-gic.h>
++#include <dt-bindings/interrupt-controller/irq.h>
+ #include <linux/of_gpio.h>
+ #include <linux/pci.h>
+ #include <linux/proc_fs.h>
+@@ -392,6 +396,40 @@
+ 	return 0;
+ }
+ 
++
++/*
++ * 6.x allocates GIC virqs dynamically through the irq domain, so the BSP's
++ * precomputed BSP_PCIE*_IRQ values (which were valid virqs under 5.10's static
++ * numbering) no longer resolve to a descriptor. request_irq() on them fails --
++ * that is what broke the WiFi driver with "Error allocating IRQ 72".
++ * Map the real GIC shared hwirq through the domain instead; this is exactly
++ * what a DT "interrupts = <GIC_SHARED n IRQ_TYPE_LEVEL_HIGH>" would do, but the
++ * PCIe controllers are registered from C rather than from a DT node.
++ */
++static unsigned int rtk_pcie_map_gic_irq(unsigned int hwirq)
++{
++	struct device_node *np;
++	struct irq_fwspec fwspec;
++	unsigned int virq;
++
++	np = of_find_compatible_node(NULL, NULL, "mti,gic");
++	if (!np) {
++		pr_err("rtk-pci: no mti,gic node, cannot map hwirq %u\n", hwirq);
++		return 0;
++	}
++	memset(&fwspec, 0, sizeof(fwspec));
++	fwspec.fwnode = of_fwnode_handle(np);
++	fwspec.param_count = 3;
++	fwspec.param[0] = GIC_SHARED;
++	fwspec.param[1] = hwirq;
++	fwspec.param[2] = IRQ_TYPE_LEVEL_HIGH;
++	virq = irq_create_fwspec_mapping(&fwspec);
++	of_node_put(np);
++	if (!virq)
++		pr_err("rtk-pci: failed to map GIC hwirq %u\n", hwirq);
++	return virq;
++}
++
+ int pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+ {
+ 	struct rtk_pci_controller *ctrl = pci_bus_to_rtk_controller(dev->bus);
+@@ -460,7 +498,6 @@
+ static int __rtk_pci_controller_init(struct rtk_pci_controller *ctrl, const struct pcie_para *phy, const char *gpio_rst_name)
+ {
+ 	struct device_node *node;
+-	enum of_gpio_flags flags;
+ 	int ret;
+ 
+ 	node = of_find_node_by_name(NULL, "board_setting");
+@@ -470,7 +507,7 @@
+ 		return -ENODEV;
+ 	}
+ 
+-	ret = of_get_named_gpio_flags(node, gpio_rst_name, 0, &flags);
++	ret = of_get_named_gpio(node, gpio_rst_name, 0);
+ 	if (ret < 0) {
+ 		pr_err("Port%d: Cannot get device gpio reset pin from Device Tree. Initialization is aborted\n",
+ 		       ctrl->port);
+@@ -499,7 +536,7 @@
+ 	int len;
+ 	u8 addr;
+ 	u16 val;
+-	struct rtk_pci_controller *p = PDE_DATA(file_inode(file));
++	struct rtk_pci_controller *p = pde_data(file_inode(file));
+ 	void __iomem *mdiobase = p->hostext_base+0x0;
+ 
+ 	len = min(sizeof(buf), count);
+@@ -593,7 +630,7 @@
+ 
+ static int rtk_pcie_phy_open(struct inode *inode, struct file *file)
+ {
+-	return(single_open(file, rtk_pcie_phy_show, PDE_DATA(inode)));
++	return(single_open(file, rtk_pcie_phy_show, pde_data(inode)));
+ }
+ 
+ 
+@@ -641,6 +678,7 @@
+ 	}
+ 	p->gpiod = gpio_to_desc(p->rst_data);
+ 
++	p->irq = rtk_pcie_map_gic_irq(GIC_EXT_PCIE_11AC);
+ 	p->is_linked = rtk_pcie_reset(p);
+ 	printk(" Port%d link=%d irq=%d\n",p->port,p->is_linked,p->irq);
+ 	if (p->is_linked)
+@@ -667,8 +705,9 @@
+ 	}
+ 	p->gpiod = gpio_to_desc(p->rst_data);
+ 
++	p->irq = rtk_pcie_map_gic_irq(GIC_EXT_PCIE_11N);
+ 	p->is_linked = rtk_pcie_reset(p);
+-	printk(" Port%d link=%d\n",p->port,p->is_linked);
++	printk(" Port%d link=%d irq=%d\n",p->port,p->is_linked,p->irq);
+ 	if (p->is_linked)
+ 		register_pci_controller(&p->controller);
+ 
+--- a/arch/mips/rtl9607c/promlib.c
++++ b/arch/mips/rtl9607c/promlib.c
+@@ -1,4 +1,4 @@
+-#include <stdarg.h>
++#include <linux/stdarg.h>
+ #include <linux/kernel.h>
+ 
+ extern void prom_putchar(char);
+--- a/arch/mips/rtl9607c/serial.c
++++ b/arch/mips/rtl9607c/serial.c
+@@ -89,7 +89,7 @@
+ 	up.irq = BSP_IRQ_UART;
+ 	up.flags = UPF_SKIP_TEST;
+ 	up.mapbase = BSP_UART0_PADDR;
+-	up.membase = ioremap_nocache(up.mapbase, BSP_UART0_PSIZE);
++	up.membase = ioremap(up.mapbase, BSP_UART0_PSIZE);
+ 	up.regshift = 2;
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
+ 	up.iotype = UPIO_MEM32;
+--- a/arch/mips/rtl9607c/setup.c
++++ b/arch/mips/rtl9607c/setup.c
+@@ -161,7 +161,7 @@
+ #ifndef CONFIG_LUNA_MEMORY_AUTO_DETECTION 
+ 	of_scan_flat_dt(early_init_dt_find_memory, NULL);
+ 	if (memory_dtb)
+-		of_scan_flat_dt(early_init_dt_scan_memory, NULL);
++		early_init_dt_scan_memory();
+ 	else {
+ 		/*
+ 		 * Memory region is shown as follows:
+--- a/arch/mips/rtl9607c/smp.c
++++ b/arch/mips/rtl9607c/smp.c
+@@ -121,9 +121,6 @@
+ 	if (!register_cps_smp_ops())
+ 		return;
+ 
+-	if (!register_cmp_smp_ops())
+-		return;
+-
+ 	if (!register_vsmp_smp_ops())
+ 		return;
+ }
+--- a/arch/mips/rtl9607c/usb.c
++++ b/arch/mips/rtl9607c/usb.c
+@@ -115,7 +115,7 @@
+ 	int len;
+ 	u8 reg;
+ 	u16 val;
+-	struct rtk_usb_phy *phy = PDE_DATA(file_inode(file));
++	struct rtk_usb_phy *phy = pde_data(file_inode(file));
+ 
+ 	len = min(sizeof(buf), count);
+ 	if (copy_from_user(buf, userbuf, len))
+@@ -175,7 +175,7 @@
+ 
+ static int rtk_usb_phy_open(struct inode *inode, struct file *file)
+ {
+-	return(single_open(file, rtk_usb_phy_show, PDE_DATA(inode)));
++	return(single_open(file, rtk_usb_phy_show, pde_data(inode)));
+ }
+ 
+ 
+@@ -870,9 +870,26 @@
+ 	return -ENODEV;
+ }
+ 
++
+ static int __init bsp_usb_init(void)
+ {
+ 	uint32  chipId,rev,subType  = 0;
++
++	/*
++	 * USB host disabled on this board (TP-Link Archer AX10/AX1500 exposes no
++	 * USB port; both WiFi radios are PCIe, not USB). The 9607C EHCI/OHCI
++	 * controllers otherwise fail to probe anyway -- OHCI cannot obtain its
++	 * GIC interrupt, EHCI setup returns -ETIMEDOUT -- and an idle,
++	 * unreachable host stack is needless attack surface. Everything below
++	 * (PHY init + host-controller platform devices) is left compiled in but
++	 * simply never registered, so no USB device can enumerate. To bring USB
++	 * back, define CONFIG_RTK_9607C_USB (add it to this dir's Kconfig).
++	 */
++	if (!IS_ENABLED(CONFIG_RTK_9607C_USB)) {
++		printk("USB: host controllers disabled for this board (no USB port)\n");
++		return 0;
++	}
++
+ 	if (rtk_switch_version_get(&chipId,&rev,&subType) == RT_ERR_OK) {
+ 		//printk("\n %s %d\n",__FUNCTION__,__LINE__);
+ 		if ((chipId==RTL9607C_CHIP_ID) && (rev==CHIP_REV_ID_C)) {
+--- a/drivers/clk/Kconfig
++++ b/drivers/clk/Kconfig
+@@ -519,6 +519,7 @@
+ source "drivers/clk/pistachio/Kconfig"
+ source "drivers/clk/qcom/Kconfig"
+ source "drivers/clk/ralink/Kconfig"
++source "drivers/clk/realtek/Kconfig"
+ source "drivers/clk/renesas/Kconfig"
+ source "drivers/clk/rockchip/Kconfig"
+ source "drivers/clk/samsung/Kconfig"
+--- a/drivers/clk/Makefile
++++ b/drivers/clk/Makefile
+@@ -140,6 +140,7 @@
+ obj-$(CONFIG_COMMON_CLK_PXA)		+= pxa/
+ obj-$(CONFIG_COMMON_CLK_QCOM)		+= qcom/
+ obj-y					+= ralink/
++obj-$(CONFIG_COMMON_CLK_RTK_APRO)	+= realtek/
+ obj-y					+= renesas/
+ obj-$(CONFIG_ARCH_ROCKCHIP)		+= rockchip/
+ obj-$(CONFIG_COMMON_CLK_SAMSUNG)	+= samsung/
+--- a/drivers/gpio/gpio-rtk-soc.c
++++ b/drivers/gpio/gpio-rtk-soc.c
+@@ -18,6 +18,7 @@
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/gpio.h>
++#include <linux/gpio/driver.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/irq.h>
+@@ -29,6 +30,7 @@
+ 
+ #include <rtk/gpio.h>
+ 
++/* Use the rtl86900 switch SDK GPIO HAL (rtk_gpio_*), matching vendor default */
+ #define CONFIG_LUNA_SOC_GPIO
+ 
+ /* GPIO Register Map */
+@@ -231,7 +233,7 @@
+ static int rtk_gpio_get_direction(struct gpio_chip *chip,
+ 				     unsigned int offset)
+ {
+-	//struct rtk_gpio_bank *bank = to_bank(chip);
++	struct rtk_gpio_bank *bank __maybe_unused = to_bank(chip);
+ 	u32 val;
+ #ifdef CONFIG_LUNA_SOC_GPIO
+ 	int ret;
+@@ -243,7 +245,7 @@
+ 	val = _rtk_gpio_get_bit(bank, RTK_GPIO_DIR, offset);
+ #endif
+ 
+-	return (val == RTK_GPIO_CFG_IN) ? GPIOF_DIR_IN : GPIOF_DIR_OUT;
++	return (val == RTK_GPIO_CFG_IN) ? GPIO_LINE_DIRECTION_IN : GPIO_LINE_DIRECTION_OUT;
+ }
+ 
+ static int rtk_gpio_direction_input(struct gpio_chip *chip,
+@@ -313,7 +315,7 @@
+  */
+ static int rtk_gpio_get(struct gpio_chip *chip, unsigned int offset)
+ {
+-	//struct rtk_gpio_bank *bank = to_bank(chip);
++	struct rtk_gpio_bank *bank __maybe_unused = to_bank(chip);
+ 	u32 value;
+ #ifdef CONFIG_LUNA_SOC_GPIO
+ 	int ret;
+@@ -331,7 +333,7 @@
+ /*
+  * Set output GPIO level
+  */
+-static void rtk_gpio_set(struct gpio_chip *chip, unsigned int offset,
++static int rtk_gpio_set(struct gpio_chip *chip, unsigned int offset,
+ 			    int output_value)
+ {
+ 	struct rtk_gpio_bank *bank = to_bank(chip);
+@@ -341,8 +343,8 @@
+ #endif
+ 
+ 	/* this function only applies to output pin */
+-	if (rtk_gpio_get_direction(chip, offset) == GPIOF_DIR_IN)
+-		return;
++	if (rtk_gpio_get_direction(chip, offset) == GPIO_LINE_DIRECTION_IN)
++		return 0;
+ 
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
+@@ -358,6 +360,8 @@
+ #endif
+ 
+ 	spin_unlock_irqrestore(&bank->lock, flags);
++
++	return 0;
+ }
+ 
+ /* IRQ chip handlers */
+@@ -596,7 +600,7 @@
+ 	bank->chip.direction_output	= rtk_gpio_direction_output;
+ 	bank->chip.get			= rtk_gpio_get;
+ 	bank->chip.set			= rtk_gpio_set;
+-	bank->chip.of_node		= np;
++	bank->chip.fwnode		= of_fwnode_handle(np);
+ 
+ 	/* GPIO numbering from 0 */
+ 	bank->chip.base			= info->index * GPIO_BANK_SIZE;
+@@ -612,7 +616,7 @@
+ 	info->bank = bank;
+ 
+ 	/* Add the GPIO bank */
+-	err = gpiochip_add(&bank->chip);
++	err = gpiochip_add_data(&bank->chip, NULL);
+ 	if (err < 0) {
+ 		dev_err(dev, "Cannot add gpiochip-%d\n",info->index);
+ 		goto ERR;
+@@ -735,7 +739,7 @@
+ 	return 0;
+ }
+ 
+-static int rtk_gpio_remove(struct platform_device *pdev)
++static void rtk_gpio_remove(struct platform_device *pdev)
+ {
+ 	struct rtk_gpio *priv = platform_get_drvdata(pdev);
+ 	int i;
+@@ -744,8 +748,6 @@
+ 		if (priv->info[i])
+ 			gpiochip_remove(&priv->info[i]->bank->chip);
+ 	}
+-
+-	return 0;
+ }
+ 
+ const struct of_device_id rtk_gpio_of_match[] = {
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -606,6 +606,12 @@
+ 	help
+ 	  Say Y here to support RDA Micro GPIO controller.
+ 
++config GPIO_RTK_SOC
++	bool "Realtek SOC GPIO controller"
++	depends on RTK_SOC_RTL8198D || RTK_SOC_RTL9607C
++	help
++	  Say yes here to support Realtek SOC GPIOs.
++
+ config GPIO_REALTEK_OTTO
+ 	tristate "Realtek Otto GPIO support"
+ 	depends on MACH_REALTEK_RTL || COMPILE_TEST
+--- a/drivers/gpio/Makefile
++++ b/drivers/gpio/Makefile
+@@ -155,6 +155,7 @@
+ obj-$(CONFIG_GPIO_RDA)			+= gpio-rda.o
+ obj-$(CONFIG_GPIO_RDC321X)		+= gpio-rdc321x.o
+ obj-$(CONFIG_GPIO_REALTEK_OTTO)		+= gpio-realtek-otto.o
++obj-$(CONFIG_GPIO_RTK_SOC)		+= gpio-rtk-soc.o
+ obj-$(CONFIG_GPIO_REG)			+= gpio-reg.o
+ obj-$(CONFIG_GPIO_ROCKCHIP)	+= gpio-rockchip.o
+ obj-$(CONFIG_GPIO_RTD)			+= gpio-rtd.o
+--- a/drivers/net/ethernet/realtek/Kconfig
++++ b/drivers/net/ethernet/realtek/Kconfig
+@@ -6,7 +6,6 @@
+ config NET_VENDOR_REALTEK
+ 	bool "Realtek devices"
+ 	default y
+-	depends on PCI
+ 	help
+ 	  If you have a network (Ethernet) card belonging to this class, say Y.
+ 
+@@ -126,4 +125,521 @@
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called rtase. This is recommended.
+ 
++config RTL8686NIC
++        tristate "Realtek RTL8686 NIC Ethernet support"
++        select CRC32
++        select MII
++        help
++          Say Y if your machine has this type of Ethernet network card.
++
++if RTL8686NIC
++source "drivers/net/ethernet/realtek/rtl86900/nicDriver/Kconfig"
++endif
++
++config RTK_SWITCHDEV
++        tristate "Realtek switchdev driver support"
++        depends on NET_SWITCHDEV
++        help
++          This option enables support for the Realtek switchdev driver.
++
++          The Realtek switchdev driver is used to interface with Realtek
++          Ethernet switches. It provides a mechanism to configure and manage
++          hardware switch functionalities through the switchdev API.
++
++          Switchdev is an API in the Linux kernel that allows hardware switches
++          to offload certain networking functions that would typically be
++          handled by the software (like bridging, VLANs, and routing).
++
++          Selecting this option will compile the driver as a module (if 'M' is
++          selected) or build it into the kernel (if 'Y' is selected). If unsure,
++          it is recommended to select 'M'.
++
++          To compile this driver as a module, choose M here: the module will be
++          called rtk_switchdev. Note that you must also enable CONFIG_SWITCHDEV
++          for this driver to function properly.
++
++config RTL_8226_SUPPORT
++        bool "Enable Realtek RTL8226 support"
++        default n
++        help
++          This enables support for systems based on RTL8226 external Giga PHY.
++
++if RTL_8226_SUPPORT
++
++config RTL_8226_USE_PORT0
++       bool "Realtek RTL8226 using port0"
++       default n
++       depends on ARCH_RTL8198F
++       help
++          Setup PHY on port0
++	  Note that it would conflict with RTL_8367S_SUPPORT
++
++config RTL_8226_USE_PORT1
++       bool "Realtek RTL8226 using port1"
++       default y if RTL_8226_SUPPORT
++       depends on ARCH_RTL8198F
++       help
++          Setup PHY on port1
++
++endif #RTL_8226_SUPPORT
++
++source "drivers/net/ethernet/realtek/rtl8367/Kconfig"
++source "drivers/net/ethernet/realtek/rtl8226B/Kconfig"
++source "drivers/net/ethernet/realtek/rtl8221B/Kconfig"
++source "drivers/net/ethernet/realtek/rtk-ms-phyOnly-3.6.8/Kconfig"
++source "drivers/net/ethernet/realtek/mvl88x3310/Kconfig"
++
++config RTK_EXT_GPHY
++        tristate "Enable Realtek external GPHY support"
++        default n
++        help
++          This enables support for external Giga PHY.
++
++config RTK_SDS_FIBER
++        tristate "Enable Realtek SDS Fiber support"
++        default n
++        help
++          This enables support for SDS fiber.
++
++menu "Chip series selec"
++
++config RTL9600_SERIES
++        bool "Realtek RTL9600 series support "
++
++config RTL9601B_SERIES
++        bool "Realtek RTL9601B series support "
++        select SFU
++
++config RTL9602C_SERIES
++        bool "Realtek RTL9602C series support "
++
++config RTL9607C_SERIES
++        bool "Realtek RTL9607C series support "
++
++config RTL9603CVD_SERIES
++        bool "Realtek RTL9603CVD series support "
++
++config CA8279_SERIES
++        bool "Realtek CA8279 series support "
++
++config CA8277B_SERIES
++        bool "Realtek CA8277B series support "
++
++config RTL8277C_SERIES
++        bool "Realtek RTL8277C series support"
++
++config RTL9607F_SERIES
++        bool "Realtek RTL9607F series support "
++
++config RTL8198F_SERIES
++        bool "Realtek RTL8198F series support "
++
++
++config RTL8198X_SERIES
++	bool "Realtek RTL8198X series support "
++	select RTK_DEV_AP
++
++config RTL8198XA_SERIES
++	bool "Realtek RTL8198XA series support "
++	select RTL8198X_SERIES
++	select CA8277B_SERIES
++
++config RTL8198XB_SERIES
++        bool "Realtek RTL8198XB series support "
++        select RTL8198X_SERIES
++        select RTL8277C_SERIES
++
++config RTL8198E_SERIES
++        bool "Realtek RTL8198E series support"
++        select RTL8198X_SERIES
++        select RTL9607F_SERIES
++	help
++	  This option enables support for Realtek RTL8198E series.
++	  If you would like to run RTL8198E series, say 'Y'.
++endmenu
++
++config LUNA_G3_SERIES
++        bool "Realtek LUNA_G3 series support "
++	help
++	  For Realtek LUNA G3 series.
++
++config MULTICHIP_ONEIMAGE
++        bool "Realtek LUNA multi chip series share one image"
++        default n
++        depends on LUNA_G3_SERIES
++
++config FPGA_PON_PMD
++        bool "FPGA access PON register by PMD interface"
++        default n
++        depends on LUNA_G3_SERIES
++
++config QOS_SUPPORT_8_QUEUES
++        bool 'QoS support 8 queues'
++
++choice
++	prompt "NIC preallocate mechanism selec"
++        default NIC_PRIV_SKB_DISABLED
++        
++	config NIC_PRIV_SKB_DISABLED
++		bool "No preallocate needed"
++
++	config RTL865X_ETH_PRIV_SKB
++		bool "Private Allocate Skbuff for RTL9600 Series Chip"
++		depends on RTL8686NIC
++
++	config RTL_ETH_RECYCLED_SKB
++		bool "Recycled skb head and data buffer"
++		depends on RTK_NIC_RX_POOL
++endchoice
++
++config RTL865X_ETH_PRIV_SKB_NUM
++	default 0
++	int "Configure size of Private Allocate Skbuff for RTL9600 Series Chip"
++	depends on RTL865X_ETH_PRIV_SKB || RTL_ETH_RECYCLED_SKB
++
++config RTL_ETH_RECYCLED_SKB_BY_MEM
++        default n
++        bool "Recycled skb number by memory size"
++        depends on RTL_ETH_RECYCLED_SKB && RTL865X_ETH_PRIV_SKB_NUM=0
++if RTL_ETH_RECYCLED_SKB_BY_MEM
++config RTL_ETH_RECYCLED_SKB_THRESHOLD
++        default 262144
++        int "Recycled skb memory threshold"
++
++config RTL_ETH_RECYCLED_SKB_BY_MEM_HIGH
++        default 24000
++        int "Recycled skb high mem"
++
++config RTL_ETH_RECYCLED_SKB_BY_MEM_LOW
++        default 12000
++        int "Recycled skb low mem"
++endif
++
++config RTL_ETH_RECYCLED_SKB_DEBUG
++        default n
++        bool "Recycled skb debug mode"
++        depends on RTL_ETH_RECYCLED_SKB
++        help
++          This turns on recycle skb debug mode for skb double free.
++          If you do not need such debuging mechanism, say 'N' here.
++
++config RTL_ETH_RECYCLED_SKB_ALLOC_MAX
++        default n
++        bool "Recycled skb allocation max"
++        depends on RTL_ETH_RECYCLED_SKB
++        help
++	  This turns on recycle skb allocation max recording.
++	  If you do not need such debuging mechanism, say 'N' here.
++
++config RTL_FBM_STACKING_RECYCLE_SKB
++	default n
++	bool "Recycled skb support FBM"
++	depends on RTL_ETH_RECYCLED_SKB && !RTL_ETH_RECYCLED_SKB_DEBUG
++	help
++	  This turns on FBM support which need hardware feature.
++	  By enable this, the NIC driver should upgrade to the nwer version
++	  which do not refill QM when receive packets from hardware.
++
++	  If you do not have such feature, say 'N' here.
++
++config RTW_MEMPOOL
++        bool "Realtek Memory Pool"
++        default n
++
++#
++# Apollo Switch Driver configuration
++#
++menuconfig RTL8686_SWITCH
++        default y if UML
++        bool "Apollo switch driver support"
++        help
++          You'll have to say Y if your machine contains a switch device that
++          you want to use.
++
++# All the following symbols are dependent on RTL8686_SWITCH - do not repeat
++# that for each of the symbols.
++if RTL8686_SWITCH
++source "drivers/net/ethernet/realtek/rtl86900/sdk/Kconfig"
++source "drivers/net/ethernet/realtek/rtl86900/tr142/Kconfig"
++source "drivers/net/ethernet/realtek/rtl86900/RT_API_demo/Kconfig"
++endif # RTL8686_SWITCH
++
++config ETHWAN
++	bool "ETHWAN"
++	default y
++#	depends on EXT_SWITCH || RTL_8676HWNAT || RTL8686NIC || 
++	help
++	ETH_WAN setting
++
++config AUTO_DHCP_CHECK
++	bool "Auto DHCP Check"
++	default n
++config RTL_IGMP_SNOOPING
++        bool "RTL_IGMP_SNOOPING"
++        default y
++config RTL_IGMP_PROXY
++        bool "RTL_IGMP_PROXY"
++        default y
++config RTK_TRAP_USER_GROUP_PS
++		bool "RTK_TRAP_USER_GROUP_PS"
++		default n
++# Realtek IGMP Module configuration
++config RTK_IGMP_MLD_SNOOPING_MODULE
++	tristate "Realtek IGMP/MLD Snooping Module"
++	help
++	    Say M or Y if you want to enable Realtek IGMP/MLD Snooping Module.
++
++config RTL_LAN_COMPATIBILITY
++       bool "support igmp snopping compatibility"
++       default n
++       depends on RTK_IGMP_MLD_SNOOPING_MODULE
++
++config RTL_NEW_IGMP_REPORT_BEHAVIOR
++       bool "support new igmp report behavior"
++       default n
++       depends on RTK_IGMP_MLD_SNOOPING_MODULE
++
++config RTL_PER_PORT_CLIENT_NUM
++       bool "support max number of registered membership per port"
++       default n
++       depends on RTK_IGMP_MLD_SNOOPING_MODULE
++
++config RTL_MLD_SNOOPING
++        bool "RTL_MLD_SNOOPING"
++        default n
++        depends on IPV6 && RTL_IGMP_SNOOPING
++
++config BOLOCK_IPTV_FROM_LAN_SERVER
++       bool "BLOCK_LAN_OR_WLAN_PORT_AS_IPTV_SERVER"
++       default n
++
++config RTL_MULTI_LAN_DEV
++        bool "Multi lan device"
++        default y if RTL_8676HWNAT
++        default n if RTL8686NIC
++        depends on (RTL_819X || RTL_8676HWNAT || RTL8686NIC)
++        help
++                support multi lan device
++
++config RTL_MULTI_ETH_WAN
++        bool "Multi WAN support"
++        default y
++        select RTL_MULTI_WAN
++        help
++        support multi wan device and smux function(for luna)
++
++#rex add
++config RTL_MULTI_PHY_WAN
++        bool "Multi Physical WAN support"
++        default n
++        depends on RTL_MULTI_ETH_WAN
++        select RTL_MULTI_WAN
++        help
++        support multi physical wan port(for luna)
++
++
++config RTL_MULTI_PHY_ETH_WAN
++        bool "Multi Physical WAN support(ETH WAN)"
++        default n
++        depends on RTL_MULTI_ETH_WAN
++        help
++        support multi physical ether wan port(for luna)
++
++config RTK_MULTI_ETH_NIC_NAME_CUSTOMIZE
++		bool "Multi ethernet NIC name prefix customize"
++		default n
++		help
++                Multi ethernet NIC name prefix customize
++
++config RTK_MULTI_ETH_NIC_NAME
++		string "Multi ethernet NIC name prefix"
++		depends on RTK_MULTI_ETH_NIC_NAME_CUSTOMIZE
++		default "eth"
++		help
++                Change the naming prefix of multi ethernet NIC
++                NOTE: The maximum length of name is 16
++
++config RTK_MULTI_ETH_NIC_NAME_IDX
++		int "Multi ethernet NIC interface name index"
++		depends on RTK_MULTI_ETH_NIC_NAME_CUSTOMIZE
++		default 0
++
++config RTK_MULTI_LAN_NAME_CUSTOMIZE
++		bool "Multi LAN interface name prefix customize"
++		depends on RTL_MULTI_LAN_DEV
++		default n
++		help
++                Multi LAN interface name prefix customize
++
++config RTK_MULTI_LAN_NAME
++		string "Multi LAN interface name prefix"
++		depends on RTK_MULTI_LAN_NAME_CUSTOMIZE
++		default "eth0."
++		help
++                Change the naming prefix of multi LAN device
++                NOTE: The maximum length of name is 16
++
++config RTK_MULTI_LAN_NAME_IDX
++		int "Multi LAN interface name index"
++		depends on RTK_MULTI_LAN_NAME_CUSTOMIZE
++		default 2
++
++config RTK_MULTI_WAN_NAME_CUSTOMIZE
++		bool "Multi WAN interface name prefix customize"
++		default y
++		help
++                Multi WAN interface name prefix customize
++
++config RTK_MULTI_WAN_NAME
++		string "Multi WAN interface name prefix"
++		depends on RTK_MULTI_WAN_NAME_CUSTOMIZE
++		default "nas"
++		help
++                Change the naming prefix of multi WAN device
++                NOTE: The maximum length of name is 16
++
++config RTK_MULTI_WAN_NAME_IDX
++		int "Multi WAN interface name index"
++		depends on RTK_MULTI_WAN_NAME_CUSTOMIZE
++		default 0
++
++config RTL_TRIPLE_PLAY_VLAN_SUPPORT
++        bool "Support triple play vlan feature"
++        default n
++
++config RTK_APP_PORT_BINDING_SUPPORT
++        bool "Support applications port binding function"
++        default n
++        depends on RTL_MULTI_ETH_WAN
++        help
++        support applications port binding function
++
++choice
++        prompt "smux selection"
++        default RTL_SMUX_LEGACY   
++        depends on RTL_MULTI_ETH_WAN
++        
++config RTL_SMUX_LEGACY
++        bool "Realtek smux function "
++       
++config RTL_SMUX_DEV
++        bool "Realtek smuxdev function "
++        
++endchoice
++	
++config RTL_MULTI_WAN
++        bool
++
++config RTL_SMUX_TXMARK_STREAMID
++		bool "RTL_SMUX_TXMARK_STREAMID"
++		depends on RTL_MULTI_ETH_WAN
++
++choice
++        prompt "Realtek HWNAT selection"
++        default HWNAT_RG
++
++#config HWNAT_RG_ROMEDRIVER
++#        bool "Realtek romeDriver"
++#        select RTK_L34_ENABLE
++#        help
++#          If unsure, say Y.
++
++config HWNAT_FLEETCONNTRACK
++        bool "Realtek Fleet Conntrack Driver"
++        select RTK_L34_FLEETCONNTRACK_ENABLE
++        help
++          Cache the forwarding decision decided by Linux kernel.
++
++config HWNAT_NONE
++        bool "Disable"
++        help
++          Disable HWNAT.
++endchoice
++
++
++#if HWNAT_RG_ROMEDRIVER
++
++#config HWNAT_RG
++#        tristate "Realtek romeDriver"
++#		default y
++#        help
++#          If unsure, say Y.
++
++#menuconfig RTK_L34_ENABLE
++#        bool "HWNAT romeDriver"
++#        source "drivers/net/ethernet/realtek/rtl86900/romeDriver/Kconfig"
++#endif
++if HWNAT_FLEETCONNTRACK
++menuconfig RTK_L34_FLEETCONNTRACK_ENABLE
++        bool "HWNAT Fleet Conntrack Driver"
++        source "drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/Kconfig"
++endif
++
++config RTL_83XX_QOS_SUPPORT
++        bool "83XX HW QoS Support"
++        default n
++        depends on RTK_DEV_AP && RTL_83XX_SUPPORT && RTK_L34_FLEETCONNTRACK_ENABLE
++        help
++        support 83xx hw qos feature
++
++config RTL_G3LITE_QOS_SUPPORT
++        bool "G3-Lite HW QoS Support"
++        default n
++        depends on RTK_DEV_AP && ARCH_RTL8198F && RTL_8226_SUPPORT 
++
++config RTK_VLAN_PASSTHROUGH_SUPPORT
++        bool "Support transparent transmission vlan feature"
++        default n
++        depends on RTK_L34_FLEETCONNTRACK_ENABLE
++        help
++        support vlan passthrough feature
++
++config RTK_VLAN_BINDING_SUPPORT
++        bool "Support vlan binding for multiple wan"
++        default n
++        depends on RTL_MULTI_ETH_WAN
++        help
++        support vlan binding feature
++
++config RTK_LINUX_VLAN_SUPPORT
++	bool "Support rtl linux vlan"
++	default n
++
++config RTK_TEST_FILTER
++	bool "Test yunme filter case"
++	default n
++
++config RTK_CTCAPD_FILTER_SUPPORT
++        bool "Enable url and dns filter for ctcapd"
++        default n
++        depends on RTL9607C_SERIES || RTL8198E_SERIES || RTL9607F_SERIES
++
++config RTK_DNS_TRAP
++        bool "Enable domain name access of AP"
++        default n
++        help
++        If you say Y here, then you can visit the webpage of AP via domain name
++        such as wifi.example.com instead of IP address
++
++config RTK_BI_COLOR_LED_SUPPORT
++        bool "Enable Bi-color LED Support"
++        default n
++        depends on RTK_SOC_RTL8198D
++
++config RTK_SINGLE_RX_RING
++        bool "Enable Single Rx Ring Support"
++        default n
++        depends on RTK_SOC_RTL8198D
++
++config RTK_WFOAX
++        bool "Enable WFO AX Support"
++        default n
++        depends on RTK_SOC_RTL8198D
++
++config RTK_BOARDID
++	bool "RTK Board ID Support"
++	default n
++	help
++	board id can decide wifi, slic, etc. driver load or not
++
+ endif # NET_VENDOR_REALTEK
+--- a/drivers/net/ethernet/realtek/Makefile
++++ b/drivers/net/ethernet/realtek/Makefile
+@@ -9,3 +9,129 @@
+ r8169-$(CONFIG_R8169_LEDS) += r8169_leds.o
+ obj-$(CONFIG_R8169) += r8169.o
+ obj-$(CONFIG_RTASE) += rtase/
++
++# In-tree fallbacks for variables the vendor SDK top-level Makefile exports
++DIR_LINUX ?= $(srctree)
++NETDIR ?= $(srctree)/drivers/net/ethernet/realtek
++APOLLODIR ?= $(srctree)/drivers/net/ethernet/realtek/rtl86900
++
++#obj-$(CONFIG_RTL9607C_SERIES) += ethctl_implement.o
++
++ifeq ($(CONFIG_MODULE_BUILD_IN),y)
++obj-$(CONFIG_RTL8686_SWITCH) += rtl86900/
++else
++obj-m += rtl86900/
++endif
++
++obj-$(CONFIG_RTK_DEV_AP) += rtk_vlan_common.o
++obj-$(CONFIG_RTK_DEV_AP) += rtk_common_utility.o
++obj-$(CONFIG_BOLOCK_IPTV_FROM_LAN_SERVER) += rtk_common_utility.o
++obj-$(CONFIG_RTK_DNS_TRAP) += rtk_dns_trap.o
++obj-$(CONFIG_RTK_DNS_TRAP) += rtk_common_utility.o
++obj-$(CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE) += rtk_fc_system.o
++obj-$(CONFIG_RTW_MEMPOOL) += rtk_mempool.o
++
++# Add symbolic link to the NIC driver .h file
++ifeq ($(CONFIG_RTL9600_SERIES),y)
++${shell ln -fs $(NETDIR)/rtl86900/nicDriver/re8686.h $(NETDIR)/re8686_nic.h}
++endif
++ifeq ($(CONFIG_RTL9601B_SERIES),y)
++${shell ln -fs $(NETDIR)/rtl86900/nicDriver/re8686_rtl9601b.h $(NETDIR)/re8686_nic.h}
++endif
++ifeq ($(CONFIG_RTL9602C_SERIES),y)
++${shell ln -fs $(NETDIR)/rtl86900/nicDriver/re8686_rtl9602c.h $(NETDIR)/re8686_nic.h}
++endif
++ifeq ($(CONFIG_RTL9607C_SERIES),y)
++${shell ln -fs $(NETDIR)/rtl86900/nicDriver/re8686_rtl9607c.h $(NETDIR)/re8686_nic.h}
++endif
++ifeq ($(CONFIG_RG_G3_SERIES),y)
++${shell ln -fs $(NETDIR)/rtl86900/nicDriver/re8686_rtl9607c.h $(NETDIR)/re8686_rtl9607c.h}
++endif
++
++ifeq ($(CONFIG_RTK_DEV_AP),y)
++obj-$(CONFIG_RTK_LINUX_VLAN_SUPPORT) += rtk_linux_vlan.o
++endif
++obj-$(CONFIG_RTK_VLAN_PASSTHROUGH_SUPPORT) += rtk_vlan_passthrough.o
++obj-$(CONFIG_RTK_VLAN_BINDING_SUPPORT) += rtk_lan_vlan.o
++obj-$(CONFIG_RTK_CTCAPD_FILTER_SUPPORT) += rtk_dns_filter.o
++
++ifeq ($(CONFIG_RTL_MULTI_ETH_WAN),y)
++obj-$(CONFIG_RTK_DEV_AP) += rtk_multi_wan_vlan.o
++obj-$(CONFIG_RTL_SMUX_LEGACY) += smux.o
++endif
++
++ifeq ($(CONFIG_RTL8686_SWITCH),y)
++EXTRA_CFLAGS += -I$(DIR_LINUX)/drivers/net/ethernet/realtek/rtl86900/sdk/include/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/drivers/net/ethernet/realtek/rtl86900/sdk/include/common/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/drivers/net/ethernet/realtek/rtl86900/sdk/system/include/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/drivers/net/ethernet/realtek/rtl86900/nicDriver/
++endif
++#ifeq ($(CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE),y)
++ifeq ($(CONFIG_COMMON_RT_API),y)
++EXTRA_CFLAGS += -I$(DIR_LINUX)/drivers/net/ethernet/realtek/rtl86900/sdk/include/rtk/rt/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/rt/include/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/drivers/net/ethernet/realtek/rtl86900/igmpHookModule/rt_igmpHook/include/
++endif
++
++ifeq ($(CONFIG_MULTICHIP_ONEIMAGE),y)
++ifeq ($(CONFIG_ARCH_CORTINA_VENUS), y)
++CA_TARGET = venus
++else ifeq ($(CONFIG_RTL8277C_SERIES), y)
++CA_TARGET = 77c
++else
++CA_TARGET = 07f
++endif # CONFIG_ARCH_CORTINA_VENUS
++endif # CONFIG_MULTICHIP_ONEIMAGE
++
++ifeq ($(CONFIG_LUNA_G3_SERIES),y)
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-plat/1.0-r0/ca-plat-1.0/inc/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-plat/1.0-r0/ca-plat-1.0/osal/osal/linux_kernel/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-plat/1.0-r0/ca-plat-1.0/osal/include/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-plat/1.0-r0/ca-plat-1.0/peri/
++ifeq ($(CONFIG_MULTICHIP_ONEIMAGE),y)
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-network-engine/1.0-r0/ca-network-engine-1.0-$(CA_TARGET)/cortina-api/include/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-network-engine/1.0-r0/ca-network-engine-1.0-$(CA_TARGET)/include/generated/
++else
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-network-engine/1.0-r0/ca-network-engine-1.0/cortina-api/include/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-network-engine/1.0-r0/ca-network-engine-1.0/include/generated/
++endif
++ifeq ($(CONFIG_RTL8198F_SERIES),y)
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-network-engine/1.0-r0/ca-network-engine-1.0/ni-drv/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-network-engine/1.0-r0/ca-network-engine-1.0/aal/include/
++endif
++ifeq ($(CONFIG_CA8279_SERIES),y)
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-network-engine/1.0-r0/ca-network-engine-1.0/ni-drv-gen1/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-network-engine/1.0-r0/ca-network-engine-1.0/aal-gen1/include/
++endif
++ifeq ($(CONFIG_CA8277B_SERIES),y)
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-network-engine/1.0-r0/ca-network-engine-1.0/ni-drv-gen2/
++EXTRA_CFLAGS += -I$(DIR_LINUX)/../ca_packages/ca-network-engine/1.0-r0/ca-network-engine-1.0/aal-gen2/include/
++endif
++endif
++
++-include $(NETDIR)/rtl86900/Compiler_Flag
++EXTRA_CFLAGS += $(PON_CFLAGS)
++#endif
++
++ifeq ($(CONFIG_RTL_83XX_SUPPORT),y)
++obj-m += rtl83xx/
++endif
++
++obj-$(CONFIG_RTL_8226B_SUPPORT) += rtl8226B/
++obj-$(CONFIG_RTL_8221B_SUPPORT) += rtl8221B/
++# only for 8261
++# obj-$(CONFIG_RTL8261_SUPPORT) += rtl82xx/
++# for 8261 + 8261n
++obj-$(CONFIG_RTL8224_SUPPORT) += rtk-ms-phyOnly/
++obj-$(CONFIG_RTL8261_SUPPORT) += rtk-ms-phyOnly/
++obj-$(CONFIG_RTL8367_SUPPORT) += rtl8367/
++
++RTK_EXT_GPHY_MODULE_NAME = extGphy
++$(RTK_EXT_GPHY_MODULE_NAME)-objs := rtk_ext_gphy.o
++obj-$(CONFIG_RTK_EXT_GPHY) += $(RTK_EXT_GPHY_MODULE_NAME).o
++
++RTK_SDS_FIBER_MODULE_NAME = sdsFiber
++$(RTK_SDS_FIBER_MODULE_NAME)-objs := rtk_sds_fiber.o
++obj-$(CONFIG_RTK_SDS_FIBER) += $(RTK_SDS_FIBER_MODULE_NAME).o
++
++subdir-ccflags-y += -Wno-error=int-conversion -Wno-error=incompatible-pointer-types -Wno-error=missing-prototypes -Wno-error=enum-conversion -Wno-error=return-type -Wno-error=discarded-qualifiers -Wno-error=implicit-int -Wno-error=old-style-declaration -Wno-error=date-time -Wno-error=enum-int-mismatch -Wno-error=empty-body -Wno-error=implicit-fallthrough -Wno-error=address
+--- a/drivers/net/ethernet/realtek/rtk_linux_vlan.c
++++ b/drivers/net/ethernet/realtek/rtk_linux_vlan.c
+@@ -37,7 +37,7 @@
+ 
+ int vlan_pvid_single_open(struct inode *inode, struct file *file)
+ {
+-        return(single_open(file, rtk_vlan_pvid_read, PDE_DATA(inode)));
++        return(single_open(file, rtk_vlan_pvid_read, pde_data(inode)));
+ }
+ 
+ static ssize_t vlan_pvid_single_write(struct file * file, const char __user * userbuf,
+@@ -67,7 +67,7 @@
+ 
+ int vlan_state_single_open(struct inode *inode, struct file *file)
+ {
+-        return(single_open(file, rtk_vlan_state_read, PDE_DATA(inode)));
++        return(single_open(file, rtk_vlan_state_read, pde_data(inode)));
+ }
+ 
+ static ssize_t vlan_state_single_write(struct file * file, const char __user * userbuf,
+@@ -96,7 +96,7 @@
+ #endif
+ int vlan_pvid_tagstate_single_open(struct inode *inode, struct file *file)
+ {
+-	return single_open(file, rtk_vlan_pvid_tagstate_read, PDE_DATA(inode));
++	return single_open(file, rtk_vlan_pvid_tagstate_read, pde_data(inode));
+ }
+ 
+ static ssize_t vlan_pvid_tagstate_single_write(struct file *file, const char __user *userbuf,
+@@ -126,7 +126,7 @@
+ 
+ int vlan_index_single_open(struct inode *inode, struct file *file)
+ {
+-        return(single_open(file, rtk_vlan_index_read, PDE_DATA(inode)));
++        return(single_open(file, rtk_vlan_index_read, pde_data(inode)));
+ }
+ static ssize_t vlan_index_single_write(struct file *file, const char __user *userbuf,
+ 		     size_t count, loff_t *off)
+@@ -155,7 +155,7 @@
+ 
+ int vlan_gorup_single_open(struct inode *inode, struct file *file)
+ {
+-        return(single_open(file, rtk_vlan_group_read, PDE_DATA(inode)));
++        return(single_open(file, rtk_vlan_group_read, pde_data(inode)));
+ }
+ 
+ static ssize_t vlan_group_single_write(struct file * file, const char __user * userbuf,
+--- a/drivers/net/ethernet/realtek/rtk_mempool.c
++++ b/drivers/net/ethernet/realtek/rtk_mempool.c
+@@ -745,7 +745,7 @@
+ 
+ 	/*del timer*/
+ 	if (timer_pending(&rtw_pool_timer))
+-		del_timer_sync(&rtw_pool_timer);
++		timer_delete_sync(&rtw_pool_timer);
+ 	return;
+ }
+ 
+--- a/drivers/net/ethernet/realtek/rtl8221B/nic_rtl8221b_mod.c
++++ b/drivers/net/ethernet/realtek/rtl8221B/nic_rtl8221b_mod.c
+@@ -328,7 +328,7 @@
+ 
+ 		len = min(count, sizeof(tmpbuf));
+ 		/* copy data to the buffer */
+-		strlcpy(tmpbuf, buffer, len);
++		strscpy(tmpbuf, buffer, len);
+ 		//tmpbuf[sizeof(tmpbuf) - 1] = '\0';
+ 		if (!str_valid(tmpbuf))
+ 			return -EINVAL;
+--- a/drivers/net/ethernet/realtek/rtl86900/Compiler_Flag
++++ b/drivers/net/ethernet/realtek/rtl86900/Compiler_Flag
+@@ -2,7 +2,13 @@
+ # compiler flag for diagshell and apollo ASIC driver under x86 CYGWIN platform
+ #
+ 
++# In-kernel kbuild already provides CONFIG_* (auto.conf); fall back to the
++# vendor SDK layout only when building standalone.
++ifneq ($(objtree),)
++include $(objtree)/.config
++else
+ include $(ROOTDIR)/$(LINUXDIR)/.config
++endif
+ 
+ CONFIG_SDK_APOLLO=n
+ CONFIG_SDK_APOLLOMP=$(CONFIG_RTL9600_SERIES)
+--- a/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/core/rtk_fc_debug.c
++++ b/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/core/rtk_fc_debug.c
+@@ -1902,7 +1902,7 @@
+ 	if (buff)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpbuf, buff, count);
++		strscpy(tmpbuf, buff, count);
+ 	}
+ 	ret=simple_strtol(tmpbuf, NULL, 0);
+ 
+@@ -5149,7 +5149,7 @@
+ 		char *strptr, *split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buff, CMD_BUFF_SIZE);
+ 
+ 		strptr = tmpBuf;
+ 
+@@ -7464,7 +7464,7 @@
+ 	}
+ 
+ #if defined(CONFIG_RTK_L34_G3_PLATFORM)
+-	strlcpy(tmpBuf, fc_db.acl_SW_table_entry[sw_index].hw_aclEntry_index, CMD_BUFF_SIZE);
++	strscpy(tmpBuf, fc_db.acl_SW_table_entry[sw_index].hw_aclEntry_index, CMD_BUFF_SIZE);
+ 	strptr=tmpBuf;
+ 	while(1)
+ 	{	//ex: 26-0,90-0
+@@ -8746,7 +8746,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buffer, CMD_BUFF_SIZE);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -11779,7 +11779,7 @@
+ 	
+ 	if(buffer) {
+ 		/* copy data to the buffer */
+-		strlcpy(tmp_buf, buffer, len);
++		strscpy(tmp_buf, buffer, len);
+ 
+ 		if(!strncmp(tmp_buf, "help", strlen(tmp_buf))) {
+ 			rtlglue_printf("format:\n");
+--- a/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/core/rtk_fc_internal.c
++++ b/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/core/rtk_fc_internal.c
+@@ -861,7 +861,7 @@
+ 	// monitor RT message type		: RTM_NEWNEIGH & RTM_DELNEIGH (nlh->nlmsg_type == 28 || 29)
+ 	
+ 	/* Receive the data packet */
+-	skb = skb_recv_datagram(sk, 0, 0, &rc);
++	skb = skb_recv_datagram(sk, 0, &rc);
+ 	if(!skb) {
+ 		WARNING("[RT EVENT] skb is NULL");
+ 		return;
+@@ -13058,7 +13058,7 @@
+ 					if(trfBit || forceUpdate)
+ 					{
+ 						pFlowTable->idleSecs = 0; // for /proc/fc/ctrl/flow_not_update_in_real_time
+-						TIMER("[Path %d] flow[%d] trf bit = 1, use = %d, ct stats 0x%lx", pathNum, idx, pCT->ct_general.use.counter, RTK_FC_HOOK_PS_CT_STATUS_GET(pCT));	// for debug
++						TIMER("[Path %d] flow[%d] trf bit = 1, use = %d, ct stats 0x%lx", pathNum, idx, refcount_read(&pCT->ct_general.use), RTK_FC_HOOK_PS_CT_STATUS_GET(pCT));	// for debug
+ 						// Traffic detected
+ 						if (RTK_FC_HOOK_PS_CT_REFRESH(pCT) != SUCCESS) {
+ 							TIMER("[Path %d] flow[%d] ct refresh is fail", pathNum, idx);
+@@ -13071,7 +13071,7 @@
+ 						}
+ 					}else{
+ 						pFlowTable->idleSecs += elapsedTime; // for /proc/fc/ctrl/flow_not_update_in_real_time
+-						TIMER("[Path %d] flow[%d] trf bit = 0, use = %d, ct stats 0x%lx", pathNum, idx, pCT->ct_general.use.counter, RTK_FC_HOOK_PS_CT_STATUS_GET(pCT));	// for debug
++						TIMER("[Path %d] flow[%d] trf bit = 0, use = %d, ct stats 0x%lx", pathNum, idx, refcount_read(&pCT->ct_general.use), RTK_FC_HOOK_PS_CT_STATUS_GET(pCT));	// for debug
+ 					}
+ 				}
+ 				break;
+--- a/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/core/rtk_fc_proc.c
++++ b/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/core/rtk_fc_proc.c
+@@ -1951,7 +1951,7 @@
+ 	if (buff)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -1983,7 +1983,7 @@
+ 	if (buff)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpbuf, buff, CMD_BUFF_SIZE);
++		strscpy(tmpbuf, buff, CMD_BUFF_SIZE);
+ 	}
+ 	ret=simple_strtol(tmpbuf, NULL, 0);
+ 
+@@ -5206,7 +5206,7 @@
+ 	{
+ 		//fc_db.debug_level=simple_strtoul(tmpBuf, NULL, 16);
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, length);
++		strscpy(tmpBuf, buff, length);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -5482,7 +5482,7 @@
+ 	if(buff)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buff, CMD_BUFF_SIZE);
+ 
+ 		strptr=tmpBuf;
+ 		while(1)
+@@ -5637,7 +5637,7 @@
+ 	}
+ 
+ 	/* copy data to the buffer */
+-	strlcpy(tmpBuf, buff, sizeof(tmpBuf));
++	strscpy(tmpBuf, buff, sizeof(tmpBuf));
+ 
+ 	// fetch net_dev name or sid
+ 	for(i=0;i<len;i++)
+@@ -6006,7 +6006,7 @@
+ 		int forceValue;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -6609,7 +6609,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -6951,7 +6951,7 @@
+ 	{
+ 		//fc_db.debug_level=simple_strtoul(tmpBuf, NULL, 16);
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, length);
++		strscpy(tmpBuf, buff, length);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -7224,7 +7224,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buff, CMD_BUFF_SIZE);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -9114,7 +9114,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr = tmpBuf;
+ 		
+@@ -9377,7 +9377,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr = tmpBuf;
+ 		
+@@ -9770,7 +9770,7 @@
+ 	{
+ 		//fc_db.debug_level=simple_strtoul(tmpBuf, NULL, 16);
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, length);
++		strscpy(tmpBuf, buff, length);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -10126,7 +10126,7 @@
+ 	if (buffer)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buffer, CMD_BUFF_SIZE);
+ 
+ 		if (_rtk_fc_parseGetValue(tmpBuf, devName, "DEVIFNAME", STRING) == FAILED)
+ 		{
+@@ -10550,7 +10550,7 @@
+ 		int vlan_register = 0;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -10719,7 +10719,7 @@
+ 		int vlan_register = 0;
+ 		
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 		
+ 		strptr=tmpBuf;
+ 		
+@@ -11153,7 +11153,7 @@
+ 	{
+ 		//fc_db.debug_level=simple_strtoul(tmpBuf, NULL, 16);
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, length);
++		strscpy(tmpBuf, buff, length);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -11404,7 +11404,7 @@
+ 		char *strptr, *split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr = tmpBuf;
+ 
+@@ -11491,7 +11491,7 @@
+ 	char *strptr,*split_str;
+ 		
+ 	/* copy data to the buffer */
+-	strlcpy(tmpBuf, buff, cmdlen);
++	strscpy(tmpBuf, buff, cmdlen);
+ 
+ 	strptr=tmpBuf;
+ 	split_str=strsep(&strptr," ");
+@@ -11527,7 +11527,7 @@
+ 	char *strptr,*split_str;
+ 
+ 	/* copy data to the buffer */
+-	strlcpy(tmpBuf, buff, cmdlen);
++	strscpy(tmpBuf, buff, cmdlen);
+ 
+ 	strptr=tmpBuf;
+ 	split_str=strsep(&strptr," ");
+@@ -11580,7 +11580,7 @@
+ 	char *strptr,*split_str;
+ 
+ 	/* copy data to the buffer */
+-	strlcpy(tmpBuf, buff, cmdlen);
++	strscpy(tmpBuf, buff, cmdlen);
+ 
+ 	strptr=tmpBuf;
+ 	split_str=strsep(&strptr," ");
+@@ -11639,7 +11639,7 @@
+ 	//fc_db.controlFuc.l2_macEgrLearning = ((_rtk_fc_proc_parsing_string_to_integer(buff,len)==0) ? FALSE : TRUE);
+ 
+ 	/* copy data to the buffer */
+-	strlcpy(tmpBuf, buff, cmdlen);
++	strscpy(tmpBuf, buff, cmdlen);
+ 
+ 	strptr=tmpBuf;
+ 	split_str=strsep(&strptr," ");
+@@ -11704,7 +11704,7 @@
+ 	char *strptr,*split_str;
+ 
+ 	/* copy data to the buffer */
+-	strlcpy(tmpBuf, buff, cmdlen);
++	strscpy(tmpBuf, buff, cmdlen);
+ 
+ 	strptr=tmpBuf;
+ 	split_str=strsep(&strptr," ");
+@@ -13145,7 +13145,7 @@
+ 		rx_dispatch_mode.smp_id = 0;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr=tmpBuf;
+ 		while(1)
+@@ -13418,7 +13418,7 @@
+ 		tx_dispatch_mode.mode = RTK_FC_DISPATCH_MODE_END;
+ 		tx_dispatch_mode.smp_id = 0;
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr=tmpBuf;
+ 		while(1)
+@@ -13526,7 +13526,7 @@
+ 		rx_dispatch_mode.smp_id = 0;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr=tmpBuf;
+ 		while(1)
+@@ -13681,7 +13681,7 @@
+ 		tx_dispatch_mode.smp_id = 0;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr=tmpBuf;
+ 		while(1)
+@@ -14221,7 +14221,7 @@
+ 		uint32 meter_bit_rate;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, length);
++		strscpy(tmpBuf, buff, length);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -14360,7 +14360,7 @@
+ 
+ 	if (buff) {
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, count);
++		strscpy(tmpBuf, buff, count);
+ 
+ 		strptr = tmpBuf;
+ 
+@@ -14571,7 +14571,7 @@
+ 	if(buff)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buff, CMD_BUFF_SIZE);
+ 
+ 		strptr=tmpBuf;
+ 		while(1)
+@@ -14700,7 +14700,7 @@
+ 	char *strptr,*split_str;
+ 
+ 	/* copy data to the buffer */
+-	strlcpy(tmpBuf, buff, cmdlen);
++	strscpy(tmpBuf, buff, cmdlen);
+ 
+ 	strptr=tmpBuf;
+ 	split_str=strsep(&strptr," ");
+@@ -14779,7 +14779,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr=tmpBuf;
+ 		while(1)
+@@ -14945,7 +14945,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buff, CMD_BUFF_SIZE);
+ 
+ 		strptr=tmpBuf;
+ 		while(1)
+@@ -15337,7 +15337,7 @@
+ 	if (buff)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, length);
++		strscpy(tmpBuf, buff, length);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -15687,7 +15687,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -16069,7 +16069,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buff, len);
++		strscpy(tmpBuf, buff, len);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -16362,7 +16362,7 @@
+ 	}
+ 
+ 	/* copy data to the buffer */
+-	strlcpy(fc_db.cmd_buf, buffer, len);
++	strscpy(fc_db.cmd_buf, buffer, len);
+ 
+ 	strptr=fc_db.cmd_buf;
+ 	split_str=strsep(&strptr," ");
+@@ -16910,7 +16910,7 @@
+ 	{
+ 	
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 		
+ 		fc_db.debugLevel=simple_strtoul(tmpBuf, NULL, 16);
+ 		
+@@ -16978,7 +16978,7 @@
+ 	if (buffer)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		fc_db.filterLevel=simple_strtoul(tmpBuf, NULL, 16);
+ 		
+@@ -17213,7 +17213,7 @@
+ 		int i=-1;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -17683,7 +17683,7 @@
+ 	if (buffer)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -17811,7 +17811,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		strptr = tmpBuf;
+ 
+@@ -18109,7 +18109,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		strptr = tmpBuf;
+ 
+@@ -18191,7 +18191,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		strptr = tmpBuf;
+ 
+@@ -18389,7 +18389,7 @@
+ 	if (buffer)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buffer, CMD_BUFF_SIZE);
+ 
+ 		//default value
+ 		hwfmr.draftVersion=1;
+@@ -18481,7 +18481,7 @@
+ 	if (buffer)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buffer, CMD_BUFF_SIZE);
+ 
+ 		if(_rtk_fc_parseGetValue(tmpBuf,devName,"DEVIFNAME",STRING) == FAILED)
+ 		{
+@@ -18694,7 +18694,7 @@
+ 		char *strptr, *split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		strptr = tmpBuf;
+ 
+@@ -19358,7 +19358,7 @@
+ 		char *strptr,*split_str;
+ 
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		strptr=tmpBuf;
+ 
+@@ -19559,7 +19559,7 @@
+ 	if (buffer)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buffer, CMD_BUFF_SIZE);
+ 
+ 		if(_rtk_fc_parseGetValue(tmpBuf,&value,"SEND",UNSIGNED_LONG) == SUCCESS)
+ 		{
+@@ -19586,7 +19586,7 @@
+ 	if (buffer)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, CMD_BUFF_SIZE);
++		strscpy(tmpBuf, buffer, CMD_BUFF_SIZE);
+ 
+ 
+ 		if(_rtk_fc_parseGetValue(tmpBuf,&add,"ADD",UNSIGNED_LONG)==SUCCESS)
+@@ -19797,7 +19797,7 @@
+ 	if (buffer)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		if(_rtk_fc_parseGetValue(tmpBuf,&enable,"DYNAMIC_PE_EN",UNSIGNED_LONG)!=SUCCESS)
+ 			;
+@@ -20003,7 +20003,7 @@
+ 	if (buffer)
+ 	{
+ 		/* copy data to the buffer */
+-		strlcpy(tmpBuf, buffer, len);
++		strscpy(tmpBuf, buffer, len);
+ 
+ 		if((_rtk_fc_parseGetValue(tmpBuf,&flushtable,"FLUSH",UNSIGNED_LONG)) == SUCCESS)
+ 			;
+@@ -20201,7 +20201,7 @@
+ 	char *strptr,*split_str;
+ 
+ 	/* copy data to the buffer */
+-	strlcpy(tmpBuf, buff, cmdlen);
++	strscpy(tmpBuf, buff, cmdlen);
+ 
+ 	strptr=tmpBuf;
+ 	split_str=strsep(&strptr," ");
+@@ -20381,7 +20381,7 @@
+ 	uint32 rate = 0U;
+ 
+ 	/* copy data to the buffer */
+-	strlcpy(tmpBuf, buff, cmdlen);
++	strscpy(tmpBuf, buff, cmdlen);
+ 
+ 	strptr = tmpBuf;
+ 	if ((split_str = strsep(&strptr," ")) == NULL) {
+@@ -20440,7 +20440,7 @@
+ 	rtk_asic_dmalso_bp_conf_t vp_bp_conf;
+ 
+ 	/* copy data to the buffer */
+-	strlcpy(tmpBuf, buff, cmdlen);
++	strscpy(tmpBuf, buff, cmdlen);
+ 
+ 	strptr = tmpBuf;
+ 	if ((split_str = strsep(&strptr," ")) == NULL)
+--- a/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/src/rtk_fc_assistant.c
++++ b/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/src/rtk_fc_assistant.c
+@@ -368,11 +368,12 @@
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
+ 	uint8 state = p ? p->state : 0;		/* BR_STATE_DISABLED=0 */
++	struct net_bridge_vlan *vlan = NULL;
+ 
+ 	if(!p)
+ 		return 0;
+ 	else
+-		return br_allowed_ingress(br, nbp_vlan_group_rcu(p), skb, vid, &state);
++		return br_allowed_ingress(br, nbp_vlan_group_rcu(p), skb, vid, &state, &vlan);
+ 
+ #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
+ 
+@@ -584,10 +585,7 @@
+ 	for (chain = 0; chain < (1 << nht->hash_shift); chain++) {
+ 		struct neighbour *n;
+ 
+-		for (n = rcu_dereference_bh(nht->hash_buckets[chain]);
+-		     n != NULL;
+-		     n = rcu_dereference_bh(n->next)){
+-
++		neigh_for_each_in_bucket_rcu(n, &nht->hash_heads[chain]) {
+ 			if((ret = cb(n, mac)) == 0/*SUCCESS*/)
+ 				break;
+ 		}
+--- a/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/src/rtk_fc_helper.c
++++ b/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/src/rtk_fc_helper.c
+@@ -12,6 +12,10 @@
+ #define COMPILE_RTK_L34_FC_MGR_MODULE 1
+ 
+ #include <linux/netfilter.h>
++/* NF_IP_PRI_* used below. Up to 6.18 this arrived transitively via
++ * <linux/netfilter/x_tables.h>; that chain is gone in 7.1, so include the
++ * defining header directly (rtk_fc_assistant.c always did). */
++#include <linux/netfilter_ipv4.h>
+ #include <linux/netdevice.h>
+ #include <linux/module.h>
+ #include <linux/version.h>
+--- a/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/src/rtk_fc_helper_ps.c
++++ b/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/src/rtk_fc_helper_ps.c
+@@ -553,7 +553,7 @@
+ char rtk_fc_br_multicast_querier_get(struct net_bridge* br)
+ {
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
+-	return br_opt_get(br, BROPT_MULTICAST_QUERIER);
++	return br->multicast_ctx.multicast_querier;
+ #else
+ 	return br->multicast_querier;
+ #endif
+@@ -1512,12 +1512,12 @@
+ }
+ int rtk_fc_timer_del_timer(rtk_fc_timer_list_t *pTimer)
+ {
+-	return del_timer(&pTimer->timer);
++	return timer_delete(&pTimer->timer);
+ }
+ int timer_init_timer(rtk_fc_timer_list_t *pTimer, void * function)
+ {
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
+-	__init_timer(&pTimer->timer, function, 0);
++	timer_setup(&pTimer->timer, (void (*)(struct timer_list *))function, 0);
+ #else
+ 	init_timer(&pTimer->timer);
+ #endif
+@@ -1654,7 +1654,7 @@
+ #if defined(CONFIG_BRIDGE_IGMP_SNOOPING)
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
+-	if(br && ((br_opt_get(br, BROPT_MULTICAST_ENABLED) == 0) || (br_opt_get(br, BROPT_MULTICAST_QUERIER) == 0)))
++	if(br && ((br_opt_get(br, BROPT_MULTICAST_ENABLED) == 0) || (br->multicast_ctx.multicast_querier == 0)))
+ #else
+ 	if(br && (br->multicast_disabled==1  || br->multicast_querier==0))
+ #endif
+--- a/drivers/net/ethernet/realtek/rtl86900/igmpHookModule/rtk_igmp_debug.c
++++ b/drivers/net/ethernet/realtek/rtl86900/igmpHookModule/rtk_igmp_debug.c
+@@ -6,7 +6,7 @@
+ #include <linux/kernel.h>
+ 
+ #include <asm/stacktrace.h> //for dump_stack()
+-#include <stdarg.h>
++#include <linux/stdarg.h>
+ #include <ioal/mem32.h>
+ 
+ 
+--- a/drivers/net/ethernet/realtek/rtl86900/igmpHookModule/rtk_igmp_snooping.c
++++ b/drivers/net/ethernet/realtek/rtl86900/igmpHookModule/rtk_igmp_snooping.c
+@@ -4684,7 +4684,7 @@
+ static void rtk_igmp_multicastSysTimerDestroy(void)
+ {
+ 	if(timer_pending(&igmpSysTimer))
+-		del_timer(&igmpSysTimer);
++		timer_delete(&igmpSysTimer);
+ }
+ 
+ 
+--- a/drivers/net/ethernet/realtek/rtl86900/nicDriver/re8686_rtl9607c.c
++++ b/drivers/net/ethernet/realtek/rtl86900/nicDriver/re8686_rtl9607c.c
+@@ -11,6 +11,8 @@
+ #include <linux/kernel.h>
+ #include <linux/compiler.h>
+ #include <linux/netdevice.h>
++#include <net/hotdata.h>
++#include <linux/platform_device.h>
+ #include <linux/etherdevice.h>
+ #include <linux/init.h>
+ #include <linux/pci.h>
+@@ -1757,7 +1759,7 @@
+ 		GMAC_TRUE
+ #endif
+ #if defined (CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE)		
+-		&&(qlen <= netdev_max_backlog)
++		&&(qlen <= net_hotdata.max_backlog)
+ #endif		
+ 		)
+ 	{
+@@ -2092,7 +2094,7 @@
+ 
+ 				qlen = skb_queue_len(&sd->input_pkt_queue);
+ 				
+-				if (qlen > netdev_max_backlog)
++				if (qlen > net_hotdata.max_backlog)
+ 				{
+ 					cp->pauseBySwRingBitmap |= (1<<ring_num);
+ 					re_private_data_root.rx_pause_by_software_bitmap |= (1<<gmac);
+@@ -2720,7 +2722,7 @@
+ 				continue;
+ 
+ 			if(timer_pending(&cp->tx_tdu_kick_polling_timer))
+-				del_timer(&cp->tx_tdu_kick_polling_timer);
++				timer_delete(&cp->tx_tdu_kick_polling_timer);
+ 			mod_timer(&cp->tx_tdu_kick_polling_timer, jiffies+tx_tdu_kick_ring_10msec);
+ 			cp->tx_tdu_poll_status[ring_num] = 1;
+ 		}
+@@ -2730,7 +2732,7 @@
+ 				continue;
+ 
+ 			if(timer_pending(&cp->tx_tdu_kick_polling_timer))
+-				del_timer(&cp->tx_tdu_kick_polling_timer);
++				timer_delete(&cp->tx_tdu_kick_polling_timer);
+ 			cp->tx_tdu_poll_status[ring_num] = 0;
+ 		}
+ 	}
+@@ -2788,7 +2790,7 @@
+ 
+ 			printk(KERN_CONT "%s %d: switch ON\n", __func__, __LINE__);
+ 			if(timer_pending(&cp->tx_tdu_kick_polling_timer))
+-				del_timer(&cp->tx_tdu_kick_polling_timer);
++				timer_delete(&cp->tx_tdu_kick_polling_timer);
+ 			mod_timer(&cp->tx_tdu_kick_polling_timer, jiffies+tx_tdu_kick_ring_10msec);
+ 			cp->tx_tdu_poll_status[ring_num] = 1;
+ 		}
+@@ -2799,7 +2801,7 @@
+ 
+ 			printk(KERN_CONT "%s %d: switch OFF\n", __func__, __LINE__);
+ 			if(timer_pending(&cp->tx_tdu_kick_polling_timer))
+-				del_timer(&cp->tx_tdu_kick_polling_timer);
++				timer_delete(&cp->tx_tdu_kick_polling_timer);
+ 			cp->tx_tdu_poll_status[ring_num] = 0;
+ 		}
+ 	}
+@@ -2829,7 +2831,7 @@
+ 
+ 			printk(KERN_CONT "%s %d: switch ON\n", __func__, __LINE__);
+ 			if(timer_pending(&cp->tx_tdu_kick_polling_timer))
+-				del_timer(&cp->tx_tdu_kick_polling_timer);
++				timer_delete(&cp->tx_tdu_kick_polling_timer);
+ 			mod_timer(&cp->tx_tdu_kick_polling_timer, jiffies+tx_tdu_kick_ring_10msec);
+ 			cp->tx_tdu_poll_status[ring_num] = 1;
+ 		}
+@@ -2840,7 +2842,7 @@
+ 
+ 			printk(KERN_CONT "%s %d: switch OFF\n", __func__, __LINE__);
+ 			if(timer_pending(&cp->tx_tdu_kick_polling_timer))
+-				del_timer(&cp->tx_tdu_kick_polling_timer);
++				timer_delete(&cp->tx_tdu_kick_polling_timer);
+ 			cp->tx_tdu_poll_status[ring_num] = 0;
+ 		}
+ 	}
+@@ -2870,7 +2872,7 @@
+ 
+ 			printk(KERN_CONT "%s %d: switch ON\n", __func__, __LINE__);
+ 			if(timer_pending(&cp->tx_tdu_kick_polling_timer))
+-				del_timer(&cp->tx_tdu_kick_polling_timer);
++				timer_delete(&cp->tx_tdu_kick_polling_timer);
+ 			mod_timer(&cp->tx_tdu_kick_polling_timer, jiffies+tx_tdu_kick_ring_10msec);
+ 			cp->tx_tdu_poll_status[ring_num] = 1;
+ 		}
+@@ -2881,7 +2883,7 @@
+ 
+ 			printk(KERN_CONT "%s %d: switch OFF\n", __func__, __LINE__);
+ 			if(timer_pending(&cp->tx_tdu_kick_polling_timer))
+-				del_timer(&cp->tx_tdu_kick_polling_timer);
++				timer_delete(&cp->tx_tdu_kick_polling_timer);
+ 			cp->tx_tdu_poll_status[ring_num] = 0;
+ 		}
+ 	}
+@@ -6344,7 +6346,7 @@
+ 
+ #ifdef TX_RECYCLE_SKB_USING_POLLING
+ 				if(timer_pending(&cp->tok_polling_timer))
+-					del_timer(&cp->tok_polling_timer);	
++					timer_delete(&cp->tok_polling_timer);	
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+ 				init_timer(&cp->tok_polling_timer);
+ 				cp->tok_polling_timer.data = cp;
+@@ -6356,7 +6358,7 @@
+ #endif
+ #ifdef TX_KICK_RING_USING_POLLING
+ 				if(timer_pending(&cp->tx_ring_active_polling_timer))
+-					del_timer(&cp->tx_ring_active_polling_timer);	
++					timer_delete(&cp->tx_ring_active_polling_timer);	
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+ 				init_timer(&cp->tx_ring_active_polling_timer);
+ 				cp->tx_ring_active_polling_timer.data = cp;
+@@ -6370,7 +6372,7 @@
+ 					timer_setup(&cp->tx_ring_active_polling_timer, re8670_tx_ring_active_poll_gmac2, 0);
+ #endif
+ 				if(timer_pending(&cp->tx_tdu_kick_polling_timer))
+-					del_timer(&cp->tx_tdu_kick_polling_timer);
++					timer_delete(&cp->tx_tdu_kick_polling_timer);
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+ 				init_timer(&cp->tx_tdu_kick_polling_timer);
+ 				cp->tx_tdu_kick_polling_timer.data = cp;
+@@ -6505,7 +6507,7 @@
+ 	unsigned int gmac;
+ 	unsigned char tmpBuf[16] = {0};
+ 	int len = (count > 15) ? 15 : count;	
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -6527,7 +6529,7 @@
+ 	unsigned int gmac;
+ 	unsigned char tmpBuf[16] = {0};
+ 	int len = (count > 15) ? 15 : count;	
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -6560,7 +6562,7 @@
+ 	unsigned int gmac;
+ 	size_t len;
+ 
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -6789,7 +6791,7 @@
+ 	int retval = -1;
+ 	static struct re_private *data;
+ 	unsigned int gmac;
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -6860,10 +6862,10 @@
+ 
+ static void rtl_ethtool_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *drvinfo)
+ {
+-	strlcpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
+-	strlcpy(drvinfo->version, DRV_VERSION, sizeof(drvinfo->version));
+-	strlcpy(drvinfo->fw_version, "N/A", sizeof(drvinfo->fw_version));
+-	strlcpy(drvinfo->bus_info, "platform", sizeof(drvinfo->bus_info));
++	strscpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
++	strscpy(drvinfo->version, DRV_VERSION, sizeof(drvinfo->version));
++	strscpy(drvinfo->fw_version, "N/A", sizeof(drvinfo->fw_version));
++	strscpy(drvinfo->bus_info, "platform", sizeof(drvinfo->bus_info));
+ 	drvinfo->n_stats = RTL_NUM_STATS;
+ }
+ 
+@@ -7217,7 +7219,7 @@
+ 	static struct re_private *data;
+ 	unsigned int rx_ring_idx;
+ 	
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -7562,7 +7564,7 @@
+ #define VAR_NUM 16
+ 	char var_name[VAR_NUM][64] = {"iocmd_reg", "iocmd1_reg", "tx_jumbo_frame_enabled", "rx_save_int_prio_to_skb", "tx_ring_backup_debug", "tx_mit", "tx_mit_timer", "tx_packet_test", "local_service_acc_enable", ""};
+ 
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -7747,7 +7749,7 @@
+ 	unsigned int totalDev = TOTAL_RTL8686_DEV_NUM;
+ 	struct file *file = m->private;
+ 	
+-	data=PDE_DATA(file_inode(file));
++	data=pde_data(file_inode(file));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -7959,7 +7961,7 @@
+ 	static struct re_private *data;
+ 	unsigned int totalPortTable = SW_PORT_NUM;
+ 	unsigned int i;
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -7985,7 +7987,7 @@
+ 	//int retval = -1, i;
+ 	static struct re_private *data;
+ 	
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -8033,7 +8035,7 @@
+ {
+ 	static struct re_private *data;
+ 	unsigned int gmac;
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -8059,7 +8061,7 @@
+ {
+ 	static struct re_private *data;
+ 	unsigned int gmac;
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -8076,7 +8078,7 @@
+ 	static struct re_private *data;
+ 	unsigned int gmac;
+ 	int len = 0, i;
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -8149,7 +8151,7 @@
+ 	char		*strptr;
+ 	static struct re_private *data;
+ 	unsigned int gmac;
+-	data=PDE_DATA(file_inode(file));
++	data=pde_data(file_inode(file));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -8194,7 +8196,7 @@
+ 	int len = 0, i;
+ 	u32 tx_hw_num=0;
+ 	
+-	data=PDE_DATA(file_inode(file));
++	data=pde_data(file_inode(file));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -8307,7 +8309,7 @@
+ 	int i;
+ 	//int retval = -1, i;
+ 	static struct re_private *data;
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -8540,7 +8542,7 @@
+ 	int 	i=0;
+ 	size_t	len;
+ 
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -9452,7 +9454,7 @@
+ 	rtk_dynamic_sram_size_t sram_size;
+ 	uint32 offset;
+ 	
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -9509,7 +9511,7 @@
+ 	rtk_dynamic_sram_size_t sram_size;
+ 	uint32 offset;
+ 
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10089,7 +10091,7 @@
+ 	rtk_dynamic_sram_size_t sram_size;
+ 	uint32 offset;
+ 	
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10134,7 +10136,7 @@
+ 	static struct re_private *data;
+ 	unsigned int gmac;
+ 	
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10183,7 +10185,7 @@
+ 	unsigned int gmac;
+ 	int len = 0;
+ 	int i = 0,j = 0;
+-	data=PDE_DATA(file_inode(file));
++	data=pde_data(file_inode(file));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10230,7 +10232,7 @@
+ 	char	*tokptr;
+ 	size_t	len;
+ 
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10270,7 +10272,7 @@
+ 	unsigned int gmac;
+ 	int len = 0;
+ 	int i = 0,j = 0;
+-	data=PDE_DATA(file_inode(file));
++	data=pde_data(file_inode(file));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10408,7 +10410,7 @@
+ 	static struct re_private *data;
+ 	struct file *file = m->private;
+ 	unsigned int gmac;
+-	data=PDE_DATA(file_inode(file));
++	data=pde_data(file_inode(file));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10467,7 +10469,7 @@
+ 	static struct re_private *data;
+ 	struct file *file = m->private;
+ 	unsigned int gmac;
+-	data=PDE_DATA(file_inode(file));
++	data=pde_data(file_inode(file));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10487,7 +10489,7 @@
+ {
+ 	static struct re_private *data;
+ 	unsigned int gmac;
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10547,7 +10549,7 @@
+ 	unsigned int gmac;
+ 	unsigned char tmpBuf[16] = {0};
+ 	int i=0;	
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10581,7 +10583,7 @@
+ 	struct file *file = m->private;
+ 	unsigned int i;
+ 	
+-	data=PDE_DATA(file_inode(file));
++	data=pde_data(file_inode(file));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -10643,7 +10645,7 @@
+ 		6,7: VO high
+ 	*/
+ 
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	buf_size = min(count, (sizeof(tmpbuf)-1));
+ 	if (buf && !copy_from_user(tmpbuf, buf, buf_size)) {
+ 		tmpbuf[buf_size] = '\0';
+@@ -10727,7 +10729,7 @@
+ 	unsigned int gmac;
+ 	unsigned char tmpBuf[16] = {0};
+ 	int len = (count > 15) ? 15 : count;
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 		return 0;
+@@ -11219,7 +11221,7 @@
+ 	struct file *file = m->private;
+ 	int len = 0, i;
+ 
+-	data=PDE_DATA(file_inode(file));
++	data=pde_data(file_inode(file));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 			return 0;
+@@ -11247,7 +11249,7 @@
+ 	int i;
+ 	//int retval = -1, i;
+ 	static struct re_private *data;
+-	data=PDE_DATA(file_inode(filp));
++	data=pde_data(file_inode(filp));
+ 	if(!(data)){
+ 		printk(KERN_INFO "Null data");
+ 	return 0;
+@@ -11265,7 +11267,7 @@
+ 		{
+ 			data->tx_ring_active_poll_enabled = 1;
+ 			if(timer_pending(&data->tx_ring_active_polling_timer))
+-				del_timer(&data->tx_ring_active_polling_timer);
++				timer_delete(&data->tx_ring_active_polling_timer);
+ 			mod_timer(&data->tx_ring_active_polling_timer, jiffies+(tx_ring_active_poll_sec*
+ HZ));
+ 			printk(KERN_CONT "Tx ring active poll mechanism enabled !\n");
+@@ -11274,9 +11276,9 @@
+ 		{
+ 			data->tx_ring_active_poll_enabled = 0;
+ 			if(timer_pending(&data->tx_ring_active_polling_timer))
+-				del_timer(&data->tx_ring_active_polling_timer);
++				timer_delete(&data->tx_ring_active_polling_timer);
+ 			if(timer_pending(&data->tx_tdu_kick_polling_timer))
+-				del_timer(&data->tx_tdu_kick_polling_timer);
++				timer_delete(&data->tx_tdu_kick_polling_timer);
+ 			printk(KERN_CONT "Tx ring active poll mechanism disabled !\n");
+ 		}
+ 		else
+@@ -11820,7 +11822,7 @@
+ //	}
+ //#ifdef CONFIG_RTL8686_SWITCH
+ //	if(timer_pending(&re_private_data_root.rx_pause_by_software_interrupt_timer))
+-//		del_timer(&re_private_data_root.rx_pause_by_software_interrupt_timer);
++//		timer_delete(&re_private_data_root.rx_pause_by_software_interrupt_timer);
+ //	
+ //	//for gpon driver
+ //    drv_nic_rxhook_exit();
+@@ -11831,6 +11833,7 @@
+ #if 1 // CONFIG_OF
+ static const struct of_device_id of_platform_rtk_gmac_table[] = {
+ 	{ .compatible = "rtk,gmac" },
++	{ /* sentinel */ },
+ };
+ MODULE_DEVICE_TABLE(of, of_platform_rtk_gmac_table);
+ 
+@@ -12363,7 +12366,7 @@
+ 
+ #ifdef RX_NAPI_MODE
+ 	re_private_data[gmac].napi.dev = dev;
+-	netif_napi_add(dev, &re_private_data[gmac].napi, re8670_poll, re_private_data[gmac].napi_budget);
++	netif_napi_add_weight(dev, &re_private_data[gmac].napi, re8670_poll, re_private_data[gmac].napi_budget);
+ #endif
+ 
+ 	if(!netdev_registered)
+@@ -12392,7 +12395,7 @@
+ 
+ #ifdef CONFIG_RTL8686_SWITCH
+ 		if(timer_pending(&re_private_data_root.rx_pause_by_software_interrupt_timer))
+-			del_timer(&re_private_data_root.rx_pause_by_software_interrupt_timer);
++			timer_delete(&re_private_data_root.rx_pause_by_software_interrupt_timer);
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+ 		init_timer(&re_private_data_root.rx_pause_by_software_interrupt_timer);
+ 		dev->getIntrTimer.data = (unsigned long)NULL;
+--- a/drivers/net/ethernet/realtek/rtl86900/romeDriver/rtk_rg_apollo_liteRomeDriver.c
++++ b/drivers/net/ethernet/realtek/rtl86900/romeDriver/rtk_rg_apollo_liteRomeDriver.c
+@@ -58852,13 +58852,13 @@
+ 	if(enable>0){
+ 		rg_kernel.rgSystemTimerDisable=0;
+ 		if(timer_pending(&rg_kernel.rgSystemTimer))
+-			del_timer(&rg_kernel.rgSystemTimer);	
++			timer_delete(&rg_kernel.rgSystemTimer);	
+ 		init_timer(&rg_kernel.rgSystemTimer);
+ 		mod_timer(&rg_kernel.rgSystemTimer, jiffies+(TICKTIME_PERIOD>>4));
+ 	}else{
+ 		rg_kernel.rgSystemTimerDisable=1;
+ 		if(timer_pending(&rg_kernel.rgSystemTimer))
+-			del_timer(&rg_kernel.rgSystemTimer);
++			timer_delete(&rg_kernel.rgSystemTimer);
+ 	}
+ 	return len;	
+ }
+@@ -66995,7 +66995,7 @@
+ #ifdef TIMER_AGG
+ 	// RG aggregate sytem timer
+ 	if(timer_pending(&rg_kernel.rgSystemTimer))
+-		del_timer(&rg_kernel.rgSystemTimer);
++		timer_delete(&rg_kernel.rgSystemTimer);
+ 	init_timer(&rg_kernel.rgSystemTimer);
+ 
+ 	// initial  timer table free list
+--- a/drivers/net/ethernet/realtek/rtl86900/romeDriver/rtk_rg_internal.c
++++ b/drivers/net/ethernet/realtek/rtl86900/romeDriver/rtk_rg_internal.c
+@@ -3821,7 +3821,7 @@
+ {
+ #ifdef __KERNEL__
+ 	if(timer_pending(timer))
+-		del_timer(timer);
++		timer_delete(timer);
+ #endif
+ }
+ 
+--- a/drivers/net/ethernet/realtek/rtl86900/romeDriver/rtk_rg_profile.c
++++ b/drivers/net/ethernet/realtek/rtl86900/romeDriver/rtk_rg_profile.c
+@@ -694,7 +694,7 @@
+ 
+ void cp3_stop(unsigned long data)
+ {
+-	//del_timer(&autoStop);
++	//timer_delete(&autoStop);
+ 	//cp3_manual_stop();
+ 	printk("5secs\n");
+ }
+--- a/drivers/net/ethernet/realtek/rtl86900/sdk/Kconfig
++++ b/drivers/net/ethernet/realtek/rtl86900/sdk/Kconfig
+@@ -14,7 +14,6 @@
+         help
+            Say Y if you want to enable RTK Apollo modules.
+ 
+-if LUNA_G3_SERIES=y
+ config GPON_FEATURE
+         bool "Support RTK GPON"
+         depends on SDK_MODULES
+@@ -29,50 +28,31 @@
+ 
+ config 10G_GPON_FEATURE
+         bool "Support 10G RTK GPON"
+-        depends on GPON_FEATURE
++        depends on GPON_FEATURE && LUNA_G3_SERIES
+         help
+           Say Y if your machine has 10G GPON phy ports.
+ 
+ config CA_RTK_GPON_FEATURE
+         bool "Support CA RTK GPON"
+-        depends on GPON_FEATURE
+-        help
+-          Say Y if your machine has pon phy port.
+-
+-endif
+-
+-if LUNA_G3_SERIES!=y
+-config GPON_FEATURE
+-        bool "Support RTK GPON"
+-        depends on SDK_MODULES
++        depends on GPON_FEATURE && LUNA_G3_SERIES
+         help
+           Say Y if your machine has pon phy port.
+ 
+-config RTK_OMCI_V1
+-        bool "Support RTK OMCI V1"
+-        depends on GPON_FEATURE
+-        help
+-          Choice for enable RTK OMCI V1.
+-
+ config TX_SD_GPIO_PIN
+         int "gpio pin for tx_sd"
+         range 0 159
+-        depends on SDK_MODULES
++        depends on SDK_MODULES && !LUNA_G3_SERIES
+         default "3"
+         help
+             the GPIO pin for tx_sd
+ 
+ config PONMISC_ROGUE_SELF_DETECT
+         bool "Support PONMAC rogue ONU self detect"
+-        depends on SDK_MODULES
+-	default n
++        depends on SDK_MODULES && !LUNA_G3_SERIES
++        default n
+         help
+           Choice for enable PONMAC rogue self detection.
+ 
+-
+-
+-endif
+-
+ config REDUCED_OMCI_BIN
+         bool "Support REDUCED OMCI BIN"
+         depends on RTK_OMCI_V1
+@@ -112,7 +92,6 @@
+         help
+           Choice for enable mechanism for reset OE module after turn off tx_disable.
+ 
+-if LUNA_G3_SERIES=y
+ config EPON_FEATURE
+         bool "Support RTK EPON"
+         depends on SDK_MODULES
+@@ -121,13 +100,13 @@
+ 
+ config 10G_EPON_FEATURE
+         bool "Support 10G RTK EPON"
+-        depends on EPON_FEATURE
++        depends on EPON_FEATURE && LUNA_G3_SERIES
+         help
+           Say Y if your machine has 10G EPON phy ports.
+ 
+ config CA_RTK_EPON_FEATURE
+         bool "Support CA RTK EPON"
+-        depends on EPON_FEATURE
++        depends on EPON_FEATURE && LUNA_G3_SERIES
+         help
+           Say Y if your machine has EPON phy ports.
+ 
+@@ -139,48 +118,6 @@
+ 
+ config RTK_OAM_V1
+         bool "Support RTK OAM V1"
+-        depends on CA_RTK_EPON_FEATURE
+-        help
+-          Choice for enable RTK OAM V1
+-
+-config RTK_OAM_BY_BUFFER
+-        bool "Support Sending OAM message by OAM Buffer"
+-        depends on CA_RTK_EPON_FEATURE
+-        default n
+-        help
+-          Choice OAM sending path by OAM Buffer
+-
+-config PON_DETECT_FEATURE
+-        bool "Support GPON/EPON detect"
+-        depends on GPON_FEATURE && EPON_FEATURE
+-        default y
+-        help
+-          Say Y if your machine has GPON/EPON detect function.
+-
+-config PON_AUTO_SELECT_FEATURE
+-        bool "Support GPON/EPON auto selection"
+-        depends on PON_DETECT_FEATURE
+-        default n
+-        help
+-          Say Y if your machine has GPON/EPON auto selection function.
+-
+-config L3FE_FLOW_CONTROL_CONFIG_FOR_SINGLE_WAN
+-        bool "Support Flow Control configuration for single WAN port"
+-        default n
+-        help
+-          Say Y if your machine has GPON/EPON auto selection function.
+-
+-endif
+-
+-if LUNA_G3_SERIES!=y
+-config EPON_FEATURE
+-        bool "Support RTK EPON"
+-        depends on SDK_MODULES
+-        help
+-          Say Y if your machine has EPON phy ports.
+-
+-config RTK_OAM_V1
+-        bool "Support RTK OAM V1"
+         depends on EPON_FEATURE
+         default y
+         help
+@@ -194,14 +131,14 @@
+           Choice OAM sending path by OAM Buffer
+ 
+ config EPON_LOS_RECOVER
+-                bool "Support EPON LOS recover"
+-                depends on RTK_OAM_V1
+-                default n
++        bool "Support EPON LOS recover"
++        depends on RTK_OAM_V1
++        default n
+ 
+ config EPON_OAM_DUMMY_MODE
+-                bool "Support EPON OAM dummy mode"
+-                depends on RTK_OAM_V1
+-                default n
++        bool "Support EPON OAM dummy mode"
++        depends on RTK_OAM_V1
++        default n
+ 
+ config PON_DETECT_FEATURE
+         bool "Support GPON/EPON detect"
+@@ -216,7 +153,13 @@
+         default n
+         help
+           Say Y if your machine has GPON/EPON auto selection function.
+-endif
++
++config L3FE_FLOW_CONTROL_CONFIG_FOR_SINGLE_WAN
++        bool "Support Flow Control configuration for single WAN port"
++        depends on LUNA_G3_SERIES
++        default n
++        help
++          Say Y if your machine has GPON/EPON auto selection function.
+ 
+ config COMMON_RT_API
+         bool "Support Common RT API"
+--- a/drivers/net/ethernet/realtek/rtl86900/sdk/src/dal/rtl9607c/dal_rtl9607c_time.c
++++ b/drivers/net/ethernet/realtek/rtl86900/sdk/src/dal/rtl9607c/dal_rtl9607c_time.c
+@@ -40,7 +40,7 @@
+ /*
+  * Data Declaration
+  */
+- static uint32    time_init = {INIT_NOT_COMPLETED};
++ static uint32    rtl9607c_time_init_done = {INIT_NOT_COMPLETED};
+ 
+  static void timeA_sub_timeB(rtk_time_timeStamp_t timeA, rtk_time_timeStamp_t timeB, rtk_time_ptpRefSign_t *pSign, rtk_time_timeStamp_t *pTimeC);
+  static int32 calc_t_rcv_i(rtk_time_timeStamp_t timeStamp, rtk_time_timeStamp_t *pT_rcv_i);
+@@ -79,7 +79,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK(!HAL_IS_PORT_EXIST(port), RT_ERR_INPUT);
+@@ -119,7 +119,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK(!HAL_IS_PORT_EXIST(port), RT_ERR_PORT_ID);
+@@ -159,7 +159,7 @@
+ 
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+-    time_init = INIT_COMPLETED;
++    rtl9607c_time_init_done = INIT_COMPLETED;
+ 
+     /* disable PTP */
+     HAL_SCAN_ALL_PORT(port)
+@@ -167,7 +167,7 @@
+         if ((ret = dal_rtl9607c_time_portPtpEnable_set(port, DISABLED)) != RT_ERR_OK)
+         {
+             RT_ERR(ret, (MOD_DAL|MOD_PTP), "");
+-            time_init = INIT_NOT_COMPLETED;
++            rtl9607c_time_init_done = INIT_NOT_COMPLETED;
+             return ret;
+         }
+     }
+@@ -175,7 +175,7 @@
+     if ((ret = dal_rtl9607c_time_frequency_set(RTL9607C_TIME_FREQUENCY_DEFAULT)) != RT_ERR_OK)
+     {
+         RT_ERR(ret, (MOD_DAL|MOD_PTP), "");
+-        time_init = INIT_NOT_COMPLETED;
++        rtl9607c_time_init_done = INIT_NOT_COMPLETED;
+         return ret;
+     }
+     
+@@ -207,7 +207,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK(!HAL_IS_PORT_EXIST(port), RT_ERR_PORT_ID);
+@@ -250,7 +250,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK(!HAL_IS_PORT_EXIST(port), RT_ERR_INPUT);
+@@ -290,7 +290,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((NULL == pTimeStamp), RT_ERR_NULL_POINTER);
+@@ -343,7 +343,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     val = TRUE;
+     if ((ret = reg_field_write(RTL9607C_PTP_TIME_CTRLr, RTL9607C_PTP_TIME_LATCHf, &val)) != RT_ERR_OK)
+@@ -381,7 +381,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((NULL == pSign), RT_ERR_NULL_POINTER);
+@@ -454,7 +454,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((PTP_REF_SIGN_END <= sign), RT_ERR_INPUT);
+@@ -546,7 +546,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((RTL9607C_TIME_FREQUENCY_MAX < freq), RT_ERR_INPUT);
+@@ -599,7 +599,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((NULL == freq), RT_ERR_NULL_POINTER);
+@@ -640,7 +640,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((PTP_MSG_TYPE_END <= type), RT_ERR_INPUT);
+@@ -680,7 +680,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((PTP_MSG_TYPE_END <= type), RT_ERR_INPUT);
+@@ -723,7 +723,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((PTP_MSG_TYPE_END <= type), RT_ERR_INPUT);
+@@ -763,7 +763,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((PTP_MSG_TYPE_END <= type), RT_ERR_INPUT);
+@@ -803,7 +803,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((RTL9607C_TIME_MEANPATHDELAY_MAX < delay), RT_ERR_INPUT);
+@@ -842,7 +842,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((NULL == delay), RT_ERR_NULL_POINTER);
+@@ -880,7 +880,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((RTL9607C_TIME_RXTIME_SEC_MAX <= timeStamp.sec), RT_ERR_INPUT);
+@@ -927,7 +927,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((NULL == pTimeStamp), RT_ERR_NULL_POINTER);
+@@ -1084,7 +1084,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((RTL9607C_TIME_PONTOD_SEC_MAX < ponTod.timeStamp.sec), RT_ERR_INPUT);
+@@ -1183,7 +1183,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((NULL == pPonTod), RT_ERR_NULL_POINTER);
+@@ -1244,7 +1244,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK(!HAL_IS_PORT_EXIST(port), RT_ERR_PORT_ID);
+@@ -1285,7 +1285,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((NULL == pEnable), RT_ERR_NULL_POINTER);
+@@ -1324,7 +1324,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((RTK_ENABLE_END <= enable), RT_ERR_INPUT);
+@@ -1368,7 +1368,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((NULL == pEnable), RT_ERR_NULL_POINTER);
+@@ -1409,7 +1409,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((RTK_ENABLE_END <= enable), RT_ERR_INPUT);
+@@ -1472,7 +1472,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((NULL == pMode), RT_ERR_NULL_POINTER);
+@@ -1513,7 +1513,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP),"%s",__FUNCTION__);
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((PTP_PPS_MODE_END <= mode), RT_ERR_INPUT);
+@@ -1578,7 +1578,7 @@
+     RT_DBG(LOG_DEBUG, (MOD_DAL|MOD_PTP), "");
+ 
+     /* check Init status */
+-    RT_INIT_CHK(time_init);
++    RT_INIT_CHK(rtl9607c_time_init_done);
+ 
+     /* parameter check */
+     RT_PARAM_CHK((NULL == pFreeTime), RT_ERR_NULL_POINTER);
+--- a/drivers/net/ethernet/realtek/rtl86900/sdk/src/module/netvd/netvd_event.c
++++ b/drivers/net/ethernet/realtek/rtl86900/sdk/src/module/netvd/netvd_event.c
+@@ -736,7 +736,7 @@
+ 		ct->timeout.expires = extra_jiffies;
+ 	else {
+ 		/* Need del_timer for race avoidance (may already be dying). */
+-		if (del_timer(&ct->timeout)) {
++		if (timer_delete(&ct->timeout)) {
+ 			ct->timeout.expires = jiffies + extra_jiffies;
+ 			add_timer(&ct->timeout);			
+ 		}
+--- a/drivers/net/ethernet/realtek/rtl86900/sdk/src/rtk/irq.c
++++ b/drivers/net/ethernet/realtek/rtl86900/sdk/src/rtk/irq.c
+@@ -33,6 +33,11 @@
+ #include <linux/interrupt.h>
+ #endif
+ 
++/* 6.18 port: OF IRQ mapping for the switch core interrupt (needed
++ * unconditionally, not just on the old CONFIG_KERNEL_4_14_x path) */
++#include <linux/of.h>
++#include <linux/of_irq.h>
++
+ #include <bspchip.h>
+ #if defined(OLD_FPGA_DEFINED)
+ #include <gpio.h>
+@@ -317,7 +322,18 @@
+ 
+     /*find irq_id is user define or from header file*/
+     if(irq_id == IRQ_ID_NO_CARE){
+-        irq_id = APOLLO_IRQ;
++        /* 6.18: MIPS GIC allocates virqs dynamically; the legacy fixed
++         * APOLLO_IRQ (BSP_SWCORE_IRQ) no longer matches. Resolve the
++         * switch-core IRQ from the "rtk,switch" DT node; fall back to
++         * the legacy constant if the node/mapping is absent. */
++        struct device_node *__sw_np = of_find_compatible_node(NULL, NULL, "rtk,switch");
++        irq_id = 0;
++        if (__sw_np) {
++            irq_id = irq_of_parse_and_map(__sw_np, 0);
++            of_node_put(__sw_np);
++        }
++        if (!irq_id)
++            irq_id = APOLLO_IRQ;
+     }
+     RT_LOG(LOG_DEBUG, (MOD_DAL|MOD_GPON),"%s: irq_id = %d\n",__FUNCTION__,irq_id);
+ 
+--- a/drivers/net/ethernet/realtek/rtl86900/sdk/system/common/debug/rt_log.c
++++ b/drivers/net/ethernet/realtek/rtl86900/sdk/system/common/debug/rt_log.c
+@@ -19,7 +19,7 @@
+ /*
+  * Include Files
+  */
+-#include <stdarg.h>
++#include <linux/stdarg.h>
+ #include <common/debug/rt_log.h>
+ 
+ /*
+--- a/drivers/net/ethernet/realtek/rtl86900/sdk/system/include/osal/print.h
++++ b/drivers/net/ethernet/realtek/rtl86900/sdk/system/include/osal/print.h
+@@ -26,7 +26,7 @@
+ /*
+  * Symbol Definition
+  */
+-#include <stdarg.h>
++#include <linux/stdarg.h>
+ 
+ 
+ #if defined(CONFIG_SDK_KERNEL_LINUX) && defined(__KERNEL__)
+--- a/drivers/net/ethernet/realtek/rtl86900/sdk/system/osal/linux/thread.c
++++ b/drivers/net/ethernet/realtek/rtl86900/sdk/system/osal/linux/thread.c
+@@ -451,6 +451,6 @@
+ 	kill_pid(pid, SIGCHLD, 1);
+ #endif
+ 
+-    complete_and_exit(NULL, ret_code);
++    kthread_complete_and_exit(NULL, ret_code);
+ } /* end of osal_thread_exit */
+ 
+--- a/drivers/net/ethernet/realtek/rtl86900/sdk/system/osal/linux/time.c
++++ b/drivers/net/ethernet/realtek/rtl86900/sdk/system/osal/linux/time.c
+@@ -330,12 +330,12 @@
+     if(timer_ptr == NULL)
+         return;
+ #if 0
+-    if ( del_timer((struct timer_list *)timer_ptr) == 0 )
++    if ( timer_delete((struct timer_list *)timer_ptr) == 0 )
+         osal_printf("del inactive timer\n\r");
+     else
+         osal_printf("del active timer\n\r");
+ #else
+-    del_timer((struct timer_list *)timer_ptr);
++    timer_delete((struct timer_list *)timer_ptr);
+ #endif
+ 
+     osal_free(timer_ptr);
+--- a/drivers/net/ethernet/realtek/rtl86900/tr142/rtk_tr142.c
++++ b/drivers/net/ethernet/realtek/rtl86900/tr142/rtk_tr142.c
+@@ -155,7 +155,7 @@
+ {
+ 	if(timer_pending(&tr142_timer[idx]))
+ 	{
+-		del_timer_sync(&tr142_timer[idx]);
++		timer_delete_sync(&tr142_timer[idx]);
+ 	}
+ 	return;
+ }
+--- a/drivers/watchdog/Kconfig
++++ b/drivers/watchdog/Kconfig
+@@ -1071,6 +1071,12 @@
+ 	  Say Y here to include support for the watchdog timer in
+ 	  Realtek RTD1295 SoCs.
+ 
++config RTL819X_WDT
++	tristate "Realtek rtl819x Timer/Watchdog"
++	select WATCHDOG_CORE
++	help
++	  Hardware driver for the watchdog timer
++
+ config REALTEK_OTTO_WDT
+ 	tristate "Realtek Otto MIPS watchdog support"
+ 	depends on MACH_REALTEK_RTL || COMPILE_TEST
+--- a/drivers/watchdog/Makefile
++++ b/drivers/watchdog/Makefile
+@@ -183,6 +183,7 @@
+ obj-$(CONFIG_PIC32_WDT) += pic32-wdt.o
+ obj-$(CONFIG_PIC32_DMT) += pic32-dmt.o
+ obj-$(CONFIG_REALTEK_OTTO_WDT) += realtek_otto_wdt.o
++obj-$(CONFIG_RTL819X_WDT) += rtl819x_wdt.o
+ 
+ # PARISC Architecture
+ 
+--- a/include/linux/if_pppox.h
++++ b/include/linux/if_pppox.h
+@@ -80,4 +80,18 @@
+     PPPOX_DEAD		= 16  /* dead, useless, please clean me up!*/
+ };
+ 
++#ifdef CONFIG_LCP_ACCELERATE
++extern int is_pppoe_channel(struct ppp_channel *chan);
++
++struct ST_MAGIC_NUM {
++	unsigned short sid; //pppoe session ID
++	unsigned int magic;
++	int ifindex;
++	unsigned char remote[ETH_ALEN];
++};
++extern struct ST_MAGIC_NUM stMagic_num[];
++extern spinlock_t stMagic_num_lock;
++
++#endif
++
+ #endif /* !(__LINUX_IF_PPPOX_H) */
+--- a/include/linux/if_vlan.h
++++ b/include/linux/if_vlan.h
+@@ -85,6 +85,47 @@
+ #define skb_vlan_tag_get_cfi(__skb)	(!!((__skb)->vlan_tci & VLAN_CFI_MASK))
+ #define skb_vlan_tag_get_prio(__skb)	(((__skb)->vlan_tci & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT)
+ 
++#if defined(CONFIG_RTK_LINUX_VLAN_SUPPORT)
++#define RTK_PVID_ARRAY_SIZE	25
++#define RTK_VLAN_GROUP_NUM	4096
++
++typedef struct rtk_linux_vlan_group{
++	u16 flag;
++	u16 vid;
++	u32 memberMask;
++	u32 tagMemberMask;
++	u16 vlanType;
++	u16 priority;
++} rtk_linux_vlan_group_t;
++
++typedef struct rtk_linux_vlan_ctl{
++	u16 state;
++	u16 pvid[RTK_PVID_ARRAY_SIZE];
++	rtk_linux_vlan_group_t group[RTK_VLAN_GROUP_NUM];
++} rtk_linux_vlan_ctl_t;
++
++enum rtk_wlan_mask{
++	RTK_WLAN0_ROOT_MASK = 7,
++	RTK_WLAN0_VAP0_MASK,
++	RTK_WLAN0_VAP1_MASK,
++	RTK_WLAN0_VAP2_MASK,
++	RTK_WLAN0_VAP3_MASK,
++	RTK_WLAN0_CLIENT_MASK,
++	RTK_WLAN1_ROOT_MASK,
++	RTK_WLAN1_VAP0_MASK,
++	RTK_WLAN1_VAP1_MASK,
++	RTK_WLAN1_VAP2_MASK,
++	RTK_WLAN1_VAP3_MASK,
++	RTK_WLAN1_CLIENT_MASK,
++	RTK_WLAN2_ROOT_MASK,
++	RTK_WLAN2_VAP0_MASK,
++	RTK_WLAN2_VAP1_MASK,
++	RTK_WLAN2_VAP2_MASK,
++	RTK_WLAN2_VAP3_MASK,
++	RTK_WLAN2_CLIENT_MASK,
++};
++#endif
++
+ static inline int vlan_get_rx_ctag_filter_info(struct net_device *dev)
+ {
+ 	ASSERT_RTNL();
+--- a/include/linux/ipv6.h
++++ b/include/linux/ipv6.h
+@@ -257,6 +257,9 @@
+ 			u16	srcrt:1,
+ 				osrcrt:1,
+ 			        rxinfo:1,
++#ifdef CONFIG_RTK_APP_PORT_BINDING_SUPPORT
++				rxinfo_rtk:1,
++#endif
+ 			        rxoinfo:1,
+ 				rxhlim:1,
+ 				rxohlim:1,
+--- a/include/linux/mtd/spinand.h
++++ b/include/linux/mtd/spinand.h
+@@ -315,6 +315,17 @@
+ 		   SPI_MEM_OP_NO_DUMMY,					\
+ 		   SPI_MEM_DTR_OP_DATA_OUT(len, buf, 8))
+ 
++extern const struct spinand_manufacturer dosilicon_spinand_manufacturer;
++extern const struct spinand_manufacturer etron_spinand_manufacturer;
++extern const struct spinand_manufacturer esmt_spinand_manufacturer;
++extern const struct spinand_manufacturer esmt2_spinand_manufacturer;
++extern const struct spinand_manufacturer fudan_spinand_manufacturer;
++extern const struct spinand_manufacturer longsys_spinand_manufacturer;
++extern const struct spinand_manufacturer xin_cun_spinand_manufacturer;
++extern const struct spinand_manufacturer xtx_spinand_manufacturer;
++extern const struct spinand_manufacturer heyangtek_spinand_manufacturer;
++extern const struct spinand_manufacturer umtek_spinand_manufacturer;
++extern const struct spinand_manufacturer hiksemi_spinand_manufacturer;
+ /* feature register */
+ #define REG_BLOCK_LOCK		0xa0
+ #define BL_ALL_UNLOCKED		0x00
+@@ -787,6 +798,16 @@
+ 	u8 *oobbuf;
+ 	u8 *scratchbuf;
+ 	const struct spinand_manufacturer *manufacturer;
++
++#ifdef CONFIG_SPI_NAND_PAGECACHE
++    /* Performance enhancement */
++    struct {
++        unsigned int bitflips;
++	int die;
++        int page;
++    } pagecache;
++#endif
++
+ 	void *priv;
+ 
+ 	int (*configure_chip)(struct spinand_device *spinand,
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -214,6 +214,19 @@
+ 	NET_DEV_STAT(tx_window_errors);
+ 	NET_DEV_STAT(rx_compressed);
+ 	NET_DEV_STAT(tx_compressed);
++#if defined(CONFIG_RTK_NETIF_EXTRA_STATS)
++	unsigned long   rx_mc_bytes;    /* multicast bytes recieved */ 
++	unsigned long   tx_mc_bytes;    /* multicast bytes transmitted */
++	unsigned long   tx_mc_packets;  /* multicast packets transmitted */
++	unsigned long   rx_bc_bytes;    /* broadcast bytes recieved */
++	unsigned long   rx_bc_packets;  /* broadcast packets recieved */
++	unsigned long   tx_bc_bytes;    /* broadcast bytes transmitted */
++	unsigned long   tx_bc_packets;  /* broadcast packets transmitted */
++	unsigned long   rx_uc_bytes;    /* unicast bytes recieved */
++	unsigned long   rx_uc_packets;  /* unicast packets recieved */
++	unsigned long   tx_uc_bytes;    /* unicast bytes transmitted */
++	unsigned long   tx_uc_packets;  /* unicast packets transmitted */
++#endif
+ };
+ #undef NET_DEV_STAT
+ 
+@@ -2445,6 +2458,15 @@
+ 
+ 	const struct netdev_queue_mgmt_ops *queue_mgmt_ops;
+ 
++#if defined(CONFIG_RTK_LINUX_VLAN_SUPPORT)
++	unsigned int vlan_member_map;
++	unsigned short vlan_id;
++#endif
++
++#ifdef CONFIG_RTK_VLAN_PASSTHROUGH_SUPPORT
++	unsigned int dev_bridge;
++#endif
++
+ 	/* for setting kernel sock attribute on TCP connection setup */
+ #define GSO_MAX_SEGS		65535u
+ #define GSO_LEGACY_MAX_SIZE	65536u
+@@ -2605,6 +2627,22 @@
+ 
+ 	struct hwtstamp_provider __rcu	*hwprov;
+ 
++	/*Realtek private fields*/
++	u32						rtk_priv_flags;
++#if defined(CONFIG_RTK_HOST_SPEEDUP)
++        u64                         speedup_tx_bytes;
++        u64                         speedup_tx_packets;
++        u64                         speedup_rx_bytes;
++        u64                         speedup_rx_packets;
++#endif	
++	#define RTK_IFF_RSMUX       (1<<0)
++	#define RTK_IFF_OSMUX       (1<<1)
++	#define RTK_IFF_VSMUX       (1<<2)
++	#define RTK_IFF_DOMAIN_ELAN (1<<3)
++	#define RTK_IFF_DOMAIN_WAN  (1<<4)
++	#define RTK_IFF_DOMAIN_WLAN (1<<5)
++	#define RTK_IFF_DOMAIN_EXT_ELAN (1<<6)
++
+ 	u8			priv[] ____cacheline_aligned
+ 				       __counted_by(priv_len);
+ } ____cacheline_aligned;
+@@ -2988,6 +3026,40 @@
+ 	struct list_head	list;
+ };
+ 
++#define RTK_NETDEV_PRIV_FLAGS
++
++/* GRO_DROP was removed upstream in 5.12; vendor code only uses it for
++ * stats bookkeeping.  napi_gro_receive() can never return this value. */
++#ifndef GRO_DROP
++#define GRO_DROP ((gro_result_t)5)
++#endif
++
++
++#ifdef RTK_NETDEV_PRIV_FLAGS
++	#define PRIV_RSMUX		 RTK_IFF_RSMUX
++	#define PRIV_OSMUX		 RTK_IFF_OSMUX
++	#define PRIV_VSMUX		 RTK_IFF_VSMUX
++	#define PRIV_DOMAIN_ELAN RTK_IFF_DOMAIN_ELAN
++	#define PRIV_DOMAIN_WAN  RTK_IFF_DOMAIN_WAN
++	#define PRIV_DOMAIN_WLAN RTK_IFF_DOMAIN_WLAN
++#else
++	#define PRIV_RSMUX		 IFF_RSMUX
++	#define PRIV_OSMUX		 IFF_OSMUX
++	#define PRIV_VSMUX		 IFF_VSMUX
++	#define PRIV_DOMAIN_ELAN IFF_DOMAIN_ELAN
++	#define PRIV_DOMAIN_WAN  IFF_DOMAIN_WAN
++	#define PRIV_DOMAIN_WLAN IFF_DOMAIN_WLAN
++#endif
++
++static inline void rtk_netdev_set_flags(struct net_device *dev, u32 flags) {
++	dev->rtk_priv_flags = flags;
++}
++
++static inline u32 rtk_netdev_get_flags(const struct net_device *dev) {
++	return dev->rtk_priv_flags;
++}
++
++
+ struct offload_callbacks {
+ 	struct sk_buff		*(*gso_segment)(struct sk_buff *skb,
+ 						netdev_features_t features);
+@@ -4064,7 +4136,9 @@
+ 	struct netdev_queue *txq = netdev_get_tx_queue(dev, queue_index);
+ 	netif_tx_stop_queue(txq);
+ }
+-
++#if defined(CONFIG_RTK_CONTROL_PACKET_PROTECTION)
++	struct sk_buff_head	input_pkt_queue_hi;
++#endif
+ /**
+  *	__netif_subqueue_stopped - test status of subqueue
+  *	@dev: network device
+@@ -4684,6 +4758,7 @@
+  */
+ static inline bool netif_oper_up(const struct net_device *dev)
+ {
++struct packet_offload *gso_find_segment_by_type(__be16 type);
+ 	unsigned int operstate = READ_ONCE(dev->operstate);
+ 
+ 	return	operstate == IF_OPER_UP ||
+@@ -5416,6 +5491,15 @@
+ 	netdev_features_t one, netdev_features_t mask);
+ 
+ /* Allow TSO being used on stacked device :
++#ifdef CONFIG_RTK_CONTROL_PACKET_PROTECTION
++extern int		netdev_hi_priomask;
++extern int              netdev_crit_priomask;
++extern int		netdev_hi_overcommit;
++extern int              netdev_crit_overcommit;
++extern u32		ov_overflow_count;
++extern u32              ov_crit_count;
++extern u32		ov_counter;
++#endif
+  * Performing the GSO segmentation before last device
+  * is a performance improvement.
+  */
+--- a/include/linux/netfilter_bridge/ebtables.h
++++ b/include/linux/netfilter_bridge/ebtables.h
+@@ -124,4 +124,11 @@
+ 
+ int ebt_register_template(const struct ebt_table *t, int(*table_init)(struct net *net));
+ void ebt_unregister_template(const struct ebt_table *t);
++#if defined(CONFIG_RTL_SMUX_DEV)
++struct ebt_smux_vlan_tag_t {
++       u16 vlan_proto;
++       u16 vlan_tci;
++};
++#endif
++
+ #endif
+--- a/include/linux/netfilter/ipset/ip_set.h
++++ b/include/linux/netfilter/ipset/ip_set.h
+@@ -528,11 +528,16 @@
+ 	a1->all[2] &= mask->all[2];
+ 	a1->all[3] &= mask->all[3];
+ }
+-
++#ifdef CONFIG_YUEME
++#define IP_SET_INIT_KEXT(skb, opt, set)			\
++	{ .bytes = (skb)->len, .packets = 1,		\
++	  .timeout = ip_set_adt_opt_timeout(opt, set), \
++	  .comment = (opt)->ext.comment }
++#else
+ #define IP_SET_INIT_KEXT(skb, opt, set)			\
+ 	{ .bytes = (skb)->len, .packets = 1, .target = true,\
+ 	  .timeout = ip_set_adt_opt_timeout(opt, set) }
+-
++#endif
+ #define IP_SET_INIT_UEXT(set)				\
+ 	{ .bytes = ULLONG_MAX, .packets = ULLONG_MAX,	\
+ 	  .timeout = (set)->timeout }
+--- a/include/linux/netfilter/nf_conntrack_sip.h
++++ b/include/linux/netfilter/nf_conntrack_sip.h
+@@ -195,4 +195,22 @@
+ 			  enum sdp_header_types term,
+ 			  unsigned int *matchoff, unsigned int *matchlen);
+ 
++#if defined(CONFIG_RTK_QOS_SUPPORT_RTP_MODULE) || defined(CONFIG_RTK_QOS_SUPPORT_RTP)
++extern struct list_head qos_rtp_list;
++struct rtp_struct {
++	struct list_head list;
++	 __be32 ip ;	//ip before nat
++	 __be16 port ; //port before nat
++	 unsigned char dir;
++};
++extern struct rtp_struct *rtk_qos_rtp_alloc(unsigned int ip,unsigned short port,unsigned char dir);
++extern int rtk_qos_rtp_list_add(struct rtp_struct *rs);
++extern struct rtp_struct *rtk_qos_rtp_list_find(unsigned int ip,unsigned short port);
++extern int rtk_qos_rtp_list_rm(struct rtp_struct *rs);
++extern int rtk_qos_rtp_add_by_ct(struct nf_conn *ct);
++extern int rtk_qos_rtp_delete_by_ct(struct nf_conn *ct);
++extern int rtk_qos_rtp_list_flush(void);
++extern void sendSigToBoa(void);
++#endif /* CONFIG_RTK_QOS_SUPPORT_RTP_MODULE */
++
+ #endif /* __NF_CONNTRACK_SIP_H__ */
+--- a/include/linux/netfilter/x_tables.h
++++ b/include/linux/netfilter/x_tables.h
+@@ -449,6 +449,9 @@
+ 
+ struct nf_hook_ops *xt_hook_ops_alloc(const struct xt_table *, nf_hookfn *);
+ 
++void xt_table_spin_lock_bh(u_int8_t af);
++void xt_table_spin_unlock_bh(u_int8_t af);
++
+ int xt_register_template(const struct xt_table *t, int(*table_init)(struct net *net));
+ void xt_unregister_template(const struct xt_table *t);
+ 
+--- a/include/linux/pstore.h
++++ b/include/linux/pstore.h
+@@ -38,6 +38,7 @@
+ 	PSTORE_TYPE_PPC_COMMON	= 6,
+ 	PSTORE_TYPE_PMSG	= 7,
+ 	PSTORE_TYPE_PPC_OPAL	= 8,
++	PSTORE_TYPE_FTRACE_KMOD = 9,
+ 
+ 	/* End of the list */
+ 	PSTORE_TYPE_MAX
+@@ -206,10 +207,18 @@
+ #define PSTORE_FLAGS_CONSOLE	BIT(1)
+ #define PSTORE_FLAGS_FTRACE	BIT(2)
+ #define PSTORE_FLAGS_PMSG	BIT(3)
++#define PSTORE_FLAGS_FTRACE_KMOD BIT(4)
+ 
+ extern int pstore_register(struct pstore_info *);
+ extern void pstore_unregister(struct pstore_info *);
+ 
++#define KMOD_MAX_NAME_LEN (64)
++struct pstore_kmod_record {
++	char name[KMOD_MAX_NAME_LEN];
++	unsigned long addr;
++	unsigned long offset;
++	int	size;
++};
+ struct pstore_ftrace_record {
+ 	unsigned long ip;
+ 	unsigned long parent_ip;
+--- a/include/linux/pstore_ram.h
++++ b/include/linux/pstore_ram.h
+@@ -34,6 +34,7 @@
+ 	unsigned long	console_size;
+ 	unsigned long	ftrace_size;
+ 	unsigned long	pmsg_size;
++	unsigned long   kmod_size;
+ 	int		max_reason;
+ 	u32		flags;
+ 	struct persistent_ram_ecc_info ecc_info;
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -36,6 +36,18 @@
+ #if IS_ENABLED(CONFIG_NF_CONNTRACK)
+ #include <linux/netfilter/nf_conntrack_common.h>
+ #endif
++
++#if defined(CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE)
++#include "../../drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/rtk_fc_skb.h"
++#endif
++#if defined(CONFIG_RTL_ETH_RECYCLED_SKB) || defined(CONFIG_WNIC_RECYCLED_SKB)
++#include "../../drivers/net/ethernet/realtek/rtl86900/nicPool/re_recycleconf.h"
++#endif
++#if defined(CONFIG_WNIC_RECYCLED_SKB)
++#include "../../drivers/net/wireless/realtek/wnic_skb_pool/recycle_conf.h"
++int recycle_wnic_buf(struct sk_buff *skb);
++struct sk_buff *wnic_recycle_skb_swap(struct sk_buff *skb);
++#endif
+ #include <net/net_debug.h>
+ #include <net/dropreason-core.h>
+ #include <net/netmem.h>
+@@ -1102,8 +1114,78 @@
+ 	/* only usable after checking ->active_extensions != 0 */
+ 	struct skb_ext		*extensions;
+ #endif
++	/* ===Realtek private fields start===*/
++	__u32 			__private_header_start[0];
++
++	__u16			srcPort;
++	__u16			srcVlanId:12;
++
++#if defined(CONFIG_RTL_ETH_RECYCLED_SKB) || defined(CONFIG_WNIC_RECYCLED_SKB)
++	__u16			recyclable:RTL_POOL_NUM_SHIFT_BITS;
++	__u8			frag_list_recycle:1;
++#if defined(CONFIG_WNIC_RECYCLED_SKB)
++	__u8			wnic_recyclable:WNIC_POOL_NUM_SHIFT_BITS;
++#endif
++#if	defined(CONFIG_RTL_ETH_RECYCLED_SKB_DEBUG)
++	__u8            double_check_free:1;
++	struct sk_buff  *skb_bak;
++	unsigned char	*head_bak;
++#endif
++	__u16			prepared_recycle:1;
++#if defined(RTL_LL_LINK_LIST_RECYCLE_SKB) || defined(WNIC_LL_LINK_LIST_RECYCLE_SKB) || defined(CONFIG_RX_WIFI_FF_AGG)
++	struct llist_node recy_llnode;
++#endif
++#endif
++
++#if defined(CONFIG_RTK_SKB_MARK2)
++	union {
++		__u64		mark2;
++		__u64		reserved_tailroom2;
++	};
++#endif
++
++	struct net_device		*from_dev;				/* Device we arrived on */
++
++#if defined(CONFIG_RTL8192CD) || defined(CONFIG_RTL8192CD_MODULE) || defined(CONFIG_RTL8852AE_BACKPORTS)
++        unsigned char   __unused;
++#endif
++
++#if defined(CONFIG_RTK_L34_ENABLE)
++	__u8				fwd_drop;				/* 1: dropped by fwdEngine, 0:normal case */
++#endif
++
++#if defined(CONFIG_CTC_AWIFI_KERNEL_JITUAN)
++	__u32			usr_define;	/* Bit 0 : awifi purpose */
++#endif
++
++#if defined(CONFIG_RTL_SMUX_DEV)
++#ifndef SMUX_MAX_TAGS
++#define SMUX_MAX_TAGS 4
++#endif
++	__u8			smux_filter_pkt;
++	__s8			reserv_vlan_count;
++	__s8			original_vlan_count;
++	__u32			reserv_vlan_header[SMUX_MAX_TAGS];
++	__u32			original_vlan_header[SMUX_MAX_TAGS];
++#endif
++
++#if defined(CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE)
++	rtk_fc_ingress_data_t fcIngressData;
++	__u32 stat_ip;
++#endif
++
++#ifdef CONFIG_RTW_MULTICHIP_MLD
++	__u8 relink_tx_pn[6];
++#endif
++
++	__u32 			__private_header_end[0];
++	/* ===Realtek private fields End===*/
+ };
+ 
++#ifdef CONFIG_RTK_FC_TCP_SPI_SUPPORT
++bool rtk_skip_nf_conntrack_in(struct sk_buff *skb);
++#endif
++
+ /* if you move pkt_type around you also must adapt those constants */
+ #ifdef __BIG_ENDIAN_BITFIELD
+ #define PKT_TYPE_MAX	(7 << 5)
+@@ -3316,8 +3398,12 @@
+  * NET_IP_ALIGN(2) + ethernet_header(14) + IP_header(20/40) + ports(8)
+  */
+ #ifndef NET_SKB_PAD
++#if defined(CONFIG_ARCH_CORTINA) || defined(CONFIG_RTK_SOC_RTL8198D)
++#define NET_SKB_PAD     max(32, 1<<7)
++#else
+ #define NET_SKB_PAD	max(32, L1_CACHE_BYTES)
+ #endif
++#endif
+ 
+ int ___pskb_trim(struct sk_buff *skb, unsigned int len);
+ 
+--- a/include/linux/spi/spi.h
++++ b/include/linux/spi/spi.h
+@@ -193,6 +193,11 @@
+ 	u32			max_speed_hz;
+ 	u8			bits_per_word;
+ 	bool			rt;
++#ifdef CONFIG_SPI_ATOMIC
++#define SPI_ATOMIC	0x10000
++#elif defined(CONFIG_ARCH_CORTINA)
++#define	SPI_XSI		0x10000
++#endif
+ #define SPI_NO_TX		BIT(31)		/* No transmit wire */
+ #define SPI_NO_RX		BIT(30)		/* No receive wire */
+ 	/*
+--- a/include/net/inet_sock.h
++++ b/include/net/inet_sock.h
+@@ -263,7 +263,9 @@
+ 	INET_FLAGS_ORIGDSTADDR	= 6,
+ 	INET_FLAGS_CHECKSUM	= 7,
+ 	INET_FLAGS_RECVFRAGSIZE	= 8,
+-
++#ifdef CONFIG_RTK_APP_PORT_BINDING_SUPPORT 
++#define IP_CMSG_PKTINFO_RTK BIT(9)
++#endif
+ 	INET_FLAGS_RECVERR	= 9,
+ 	INET_FLAGS_RECVERR_RFC4884 = 10,
+ 	INET_FLAGS_FREEBIND	= 11,
+--- a/include/net/ip6_tunnel.h
++++ b/include/net/ip6_tunnel.h
+@@ -18,6 +18,48 @@
+ /* determine capability on a per-packet basis */
+ #define IP6_TNL_F_CAP_PER_PACKET 0x40000
+ 
++#ifdef CONFIG_IPV6_MAPE_PSID_KERNEL_HOOK
++struct mape_psid_info{
++	struct in6_addr laddr;
++	struct in6_addr raddr;
++
++	__u8 psid_offset;
++	__u8 psid_len;
++	__u16 psid;
++};
++
++struct __ip6_tnl_psid{
++	__u8 set;
++	struct mape_psid_info psid_info;
++	rwlock_t	portset_id_lock;
++	__u16 kernel_ipid;
++	__u16 fc_ipid;
++};
++#endif
++
++/* IPv6 tunnel FMR */
++struct ip6_tnl_fmr_rule{
++	struct in6_addr ip6_prefix;
++	struct in_addr ip4_prefix;
++
++	__u8 ip6_prefix_len;
++	__u8 ip4_prefix_len;
++	__u8 ea_len;
++	__u8 offset;
++};
++
++struct ipv6_tnl_fmr{
++	struct in6_addr laddr;
++	struct in6_addr raddr;
++	struct ip6_tnl_fmr_rule rule;
++};
++
++struct __ip6_tnl_fmr {
++	struct __ip6_tnl_fmr *next; /* next fmr in list */
++	struct ip6_tnl_fmr_rule rule;
++};
++
++
+ struct __ip6_tnl_parm {
+ 	char name[IFNAMSIZ];	/* name of tunnel device */
+ 	int link;		/* ifindex of underlying L2 interface */
+@@ -29,7 +71,11 @@
+ 	__u32 flags;		/* tunnel flags */
+ 	struct in6_addr laddr;	/* local tunnel end-point address */
+ 	struct in6_addr raddr;	/* remote tunnel end-point address */
+-
++	struct __ip6_tnl_fmr *fmrs;	/* FMRs */
++	
++#ifdef CONFIG_IPV6_MAPE_PSID_KERNEL_HOOK
++	struct __ip6_tnl_psid mape_psid; /* psid */
++#endif
+ 	IP_TUNNEL_DECLARE_FLAGS(i_flags);
+ 	IP_TUNNEL_DECLARE_FLAGS(o_flags);
+ 	__be32			i_key;
+@@ -40,6 +86,9 @@
+ 	__u8			erspan_ver;	/* ERSPAN version */
+ 	__u8			dir;	/* direction */
+ 	__u16			hwid;	/* hwid */
++
++	__u8			mape_rfc7597;
++	struct proc_dir_entry *mape_fmr_proc;
+ };
+ 
+ /* IPv6 tunnel */
+@@ -182,4 +231,18 @@
+ 	dev_xmit_recursion_dec();
+ }
+ #endif
++#ifdef CONFIG_IPV6_MAPE_PSID_KERNEL_HOOK
++bool is_mape_session(void *nf_ct);/*Return Value: false-no, true-yes*/
++bool ftp_alg_port_is_in_mape_portset(void *nf_ct, __u16 port);/*Return Value: false-no, true-yes*/
++__u16 ftp_alg_get_mape_available_port(void *nf_ct, __u16 port);/*Return Value: 0-error, >0-available port*/
++
++#ifdef CONFIG_IPV6_MAPE_IPID_ADJUST
++__u16 kernel_get_mape_ipid(char *tun_name);
++#ifdef CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE
++__u16 fc_get_mape_ipid(char *tun_name);	
++#endif
++#endif //CONFIG_IPV6_MAPE_IPID_ADJUST
++
++#endif // CONFIG_IPV6_MAPE_PSID_KERNEL_HOOK
++
+ #endif
+--- a/include/net/ip.h
++++ b/include/net/ip.h
+@@ -106,7 +106,6 @@
+ 
+ #define IPCB(skb) ((struct inet_skb_parm*)((skb)->cb))
+ #define PKTINFO_SKB_CB(skb) ((struct in_pktinfo *)((skb)->cb))
+-
+ /* return enslaved device index if relevant */
+ static inline int inet_sdif(const struct sk_buff *skb)
+ {
+--- a/include/net/netfilter/nf_conntrack_core.h
++++ b/include/net/netfilter/nf_conntrack_core.h
+@@ -105,4 +105,13 @@
+ void __nf_ct_change_status(struct nf_conn *ct, unsigned long on, unsigned long off);
+ int nf_ct_change_status_common(struct nf_conn *ct, unsigned int status);
+ 
++#ifdef CONFIG_RTK_FC_TCP_SPI_SUPPORT
++bool rtk_fc_nf_ct_get_tuple(const struct sk_buff *skb,
++		unsigned int nhoff,
++		unsigned int dataoff,
++		u_int16_t l3num,
++		u_int8_t protonum,
++		struct net *net,
++		struct nf_conntrack_tuple *tuple);
++#endif
+ #endif /* _NF_CONNTRACK_CORE_H */
+--- a/include/net/netfilter/nf_conntrack_expect.h
++++ b/include/net/netfilter/nf_conntrack_expect.h
+@@ -120,6 +120,13 @@
+ 		    const struct nf_conntrack_zone *zone,
+ 		    const struct nf_conntrack_tuple *tuple);
+ 
++#if defined(CONFIG_IP_NF_TARGET_CONENAT)
++			struct nf_conntrack_expect *
++			__nf_ct_expect_find_bysave(struct net *net, 
++						const struct nf_conntrack_tuple *tupleMake, 
++						const struct nf_conntrack_tuple *tuple);
++#endif
++
+ struct nf_conntrack_expect *
+ nf_ct_expect_find_get(struct net *net,
+ 		      const struct nf_conntrack_zone *zone,
+--- a/include/net/netfilter/nf_conntrack_extend.h
++++ b/include/net/netfilter/nf_conntrack_extend.h
+@@ -31,6 +31,9 @@
+ #if IS_ENABLED(CONFIG_NET_ACT_CT)
+ 	NF_CT_EXT_ACT_CT,
+ #endif
++#if IS_ENABLED(CONFIG_NF_CONNTRACK_RTCACHE)
++	NF_CT_EXT_RTCACHE,
++#endif
+ 	NF_CT_EXT_NUM,
+ };
+ 
+@@ -42,6 +45,7 @@
+ };
+ 
+ static inline bool __nf_ct_ext_exist(const struct nf_ct_ext *ext, u8 id)
++#define NF_CT_EXT_RTCACHE_TYPE struct nf_conn_rtcache
+ {
+ 	return !!ext->offset[id];
+ }
+--- a/include/net/netfilter/nf_conntrack.h
++++ b/include/net/netfilter/nf_conntrack.h
+@@ -111,17 +111,40 @@
+ 
+ #if defined(CONFIG_NF_CONNTRACK_MARK)
+ 	u_int32_t mark;
++#if defined(CONFIG_RTK_SKB_MARK2)
++        u_int64_t mark2;
++#endif
+ #endif
+ 
+ #ifdef CONFIG_NF_CONNTRACK_SECMARK
+ 	u_int32_t secmark;
+ #endif
++#ifdef CONFIG_YUEME
++	u_int32_t appCtrlLog;
++#endif
++#if defined(CONFIG_YUEME_DPI) || defined(CONFIG_CU_DPI) || defined(CONFIG_CU_SIMPLIFIED_DPI)
++	uint32_t layer7_id;
++	void *dpi_context;
++	unsigned char dpi_dscp[IP_CT_DIR_MAX];
++#endif
+ 
+ 	/* Extensions */
+ 	struct nf_ct_ext *ext;
+ 
++#if defined(CONFIG_NF_CONNTRACK_RTSP) || defined(CONFIG_NF_CONNTRACK_RTSP_MODULE)
++	char rtsp_data_mark;
++#endif
++
+ 	/* Storage reserved for other modules, must be the last member */
+ 	union nf_conntrack_proto proto;
++
++#if defined(CONFIG_NETFILTER_XT_MATCH_OUT_PHYSDEV)
++	char out_physdev_name[IFNAMSIZ];
++#endif
++
++#ifdef CONFIG_IPV6_MAPE_PSID_KERNEL_HOOK
++	char out_mape_tunnel_name[IFNAMSIZ];
++#endif
+ };
+ 
+ static inline struct nf_conn *
+@@ -381,4 +404,29 @@
+ #define MODULE_ALIAS_NFCT_HELPER(helper) \
+         MODULE_ALIAS("nfct-helper-" helper)
+ 
++#if defined(CONFIG_YUEME_DPI) || defined(CONFIG_CU_DPI) || defined(CONFIG_CU_SIMPLIFIED_DPI)
++extern int nf_conntrack_event_hook_register(void (*hook)(enum ip_conntrack_events event, struct nf_conn *ct));
++extern int nf_conntrack_event_hook_unregister(void);
++#endif
++
++#if defined(CONFIG_NF_RTL_PROTO_CONNTRACK_NUM_LIMIT)
++#ifndef SUCCESS
++#define SUCCESS 	0
++#endif
++#ifndef FAILED
++#define FAILED -1
++#endif
++
++enum {
++	PROT_ICMP,
++	PROT_TCP,
++	PROT_UDP,
++	PROT_OTHER,
++	PROT_MAX
++};
++#endif
++
++#if defined(CONFIG_RTL_MULTI_PHY_ETH_WAN)
++void rtl_nf_ct_cleanup_by_ipv4(__be32 ipv4);
++#endif
+ #endif /* _NF_CONNTRACK_H */
+--- a/include/net/netfilter/nf_nat.h
++++ b/include/net/netfilter/nf_nat.h
+@@ -106,6 +106,11 @@
+ 
+ int nf_ct_nat(struct sk_buff *skb, struct nf_conn *ct,
+ 	      enum ip_conntrack_info ctinfo, int *action,
++#ifdef CONFIG_IPV6_MAPE_PSID_KERNEL_HOOK
++int rtl_nf_nat_used_tuple(const struct nf_conntrack_tuple *tuple,
++		  const struct nf_conn *ignored_conntrack);
++#endif
++
+ 	      const struct nf_nat_range2 *range, bool commit);
+ 
+ static inline int nf_nat_initialized(const struct nf_conn *ct,
+--- a/include/net/netns/conntrack.h
++++ b/include/net/netns/conntrack.h
+@@ -91,7 +91,11 @@
+ 	u8			sysctl_checksum;
+ 
+ 	struct ip_conntrack_stat __percpu *stat;
++#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
++	struct atomic_notifier_head nf_conntrack_chain;
++#else
+ 	struct nf_ct_event_notifier __rcu *nf_conntrack_event_cb;
++#endif
+ 	struct nf_ip_net	nf_ct_proto;
+ #if defined(CONFIG_NF_CONNTRACK_LABELS)
+ 	atomic_t		labels_used;
+--- a/include/net/netns/ipv6.h
++++ b/include/net/netns/ipv6.h
+@@ -55,6 +55,9 @@
+ 	int max_dst_opts_len;
+ 	int max_hbh_opts_len;
+ 	int seg6_flowlabel;
++#ifdef CONFIG_RTK_IPV6_LOGO_TEST
++	int rtk_ip6_logo_test;//0: None  1: ReadyLogo Router  2: Readylogo HOST   3: CE-Router Logo
++#endif
+ 	u32 ioam6_id;
+ 	u64 ioam6_id_wide;
+ 	u8 skip_notify_on_dev_down;
+--- a/include/net/sock.h
++++ b/include/net/sock.h
+@@ -537,6 +537,9 @@
+ 				sk_no_check_tx : 1,
+ 				sk_no_check_rx : 1;
+ 	u8			sk_shutdown;
++#if defined(CONFIG_RTK_SKB_MARK2)
++	__u64			sk_mark2;
++#endif
+ 	unsigned long	        sk_lingertime;
+ 	struct proto		*sk_prot_creator;
+ 	rwlock_t		sk_callback_lock;
+@@ -922,6 +925,9 @@
+ 	hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
+ }
+ 
++#ifdef CONFIG_SOCK_RCVMARK
++	SOCK_RCVMARK, /* for recvmsg get SKB MARK */
++#endif
+ static inline void __sk_nulls_add_node_tail_rcu(struct sock *sk, struct hlist_nulls_head *list)
+ {
+ 	hlist_nulls_add_tail_rcu(&sk->sk_nulls_node, list);
+@@ -2869,6 +2875,11 @@
+ void __sock_recv_cmsgs(struct msghdr *msg, struct sock *sk,
+ 		       struct sk_buff *skb);
+ 
++#ifdef CONFIG_SOCK_RCVMARK
++void sock_recv_mark(struct msghdr *msg, struct sock *sk,
++				  struct sk_buff *skb);
++#endif
++
+ #define SK_DEFAULT_STAMP (-1L * NSEC_PER_SEC)
+ static inline void sock_recv_cmsgs(struct msghdr *msg, struct sock *sk,
+ 				   struct sk_buff *skb)
+@@ -2887,6 +2898,10 @@
+ 		sock_write_timestamp(sk, skb->tstamp);
+ 	else if (unlikely(sock_read_timestamp(sk) == SK_DEFAULT_STAMP))
+ 		sock_write_timestamp(sk, 0);
++	
++#ifdef CONFIG_SOCK_RCVMARK
++	sock_recv_mark(msg, sk, skb);
++#endif
+ }
+ 
+ void __sock_tx_timestamp(__u32 tsflags, __u8 *tx_flags);
+@@ -3133,6 +3148,10 @@
+ #endif
+ void sock_no_linger(struct sock *sk);
+ void sock_set_keepalive(struct sock *sk);
++#if defined(CONFIG_RTK_SKB_MARK2)
++void sock_set_mark2(struct sock *sk, u64 val);
++#endif
++
+ void sock_set_priority(struct sock *sk, u32 priority);
+ void sock_set_rcvbuf(struct sock *sk, int val);
+ void sock_set_mark(struct sock *sk, u32 val);
+--- a/include/net/xfrm.h
++++ b/include/net/xfrm.h
+@@ -129,6 +129,27 @@
+ 	u32			seq;
+ 	struct xfrm_address_filter *filter;
+ };
++#if defined(CONFIG_RTK_FC_IPSEC_FASTFWD)
++#define uint32 unsigned int
++
++typedef struct rtk_fc_ipsec_saInfo_ops_s {
++	
++	int (*ipsec_saInfo_add)(uint32 direction, struct xfrm_state *x, struct xfrm_policy *xp);
++	int (*ipsec_saInfo_delete)(uint32 spi);
++	int (*ipsec_saInfo_soft_delete)(uint32 spi);
++	int (*ipsec_callback_get_hwnatMode)(void);
++	int (*ipsec_callback_shortCut_en)(void);
++	int (*ipsec_callback_supported_mode)(u8 cipher_mode, int hash_mode);
++	int (*ipsec_callback_table_ready)(uint32 spi);
++	int (*ipsec_callback_get_seqno)(uint32 spi, struct	ip_esp_hdr *esph);
++	
++}rtk_fc_ipsec_saInfo_ops_t;
++
++void xfrm_state_find_by_xfrm_policy(struct xfrm_policy *xp, struct xfrm_state **x1);
++struct xfrm_policy *get_policy_by_partial_policy(int dir, struct xfrm_policy *policy);
++
++
++#endif
+ 
+ enum {
+ 	XFRM_DEV_OFFLOAD_IN = 1,
+--- a/include/uapi/asm-generic/socket.h
++++ b/include/uapi/asm-generic/socket.h
+@@ -175,4 +175,7 @@
+ 
+ #endif
+ 
++/* for CONFIG_SOCK_RCVMARK: mainline defines SO_RCVMARK (75) */
++#define SO_MARK2		102
++
+ #endif /* __ASM_GENERIC_SOCKET_H */
+--- a/include/uapi/linux/if_ether.h
++++ b/include/uapi/linux/if_ether.h
+@@ -34,7 +34,9 @@
+ #define ETH_HLEN	14		/* Total octets in header.	 */
+ #define ETH_ZLEN	60		/* Min. octets in frame sans FCS */
+ #define ETH_DATA_LEN	1500		/* Max. octets in payload	 */
++#define ETH_MAX_DATA_LEN	9000	/* Max. octets in payload with jumbo */
+ #define ETH_FRAME_LEN	1514		/* Max. octets in frame sans FCS */
++#define ETH_MAX_FRAME_LEN	9014	/* Max. octets in frame sans FCS with jumbo */
+ #define ETH_FCS_LEN	4		/* Octets in the FCS		 */
+ 
+ #define ETH_MIN_MTU	68		/* Min IPv4 MTU per RFC791	*/
+--- a/include/uapi/linux/if_link.h
++++ b/include/uapi/linux/if_link.h
+@@ -37,6 +37,19 @@
+ 	__u32	tx_compressed;
+ 
+ 	__u32	rx_nohandler;
++#if defined(CONFIG_RTK_NETIF_EXTRA_STATS)
++	__u32   rx_mc_bytes;    /* multicast bytes recieved */ 
++	__u32   tx_mc_bytes;    /* multicast bytes transmitted */
++	__u32   tx_mc_packets;  /* multicast packets transmitted */
++	__u32   rx_bc_bytes;    /* broadcast bytes recieved */
++	__u32   rx_bc_packets;  /* broadcast packets recieved */
++	__u32   tx_bc_bytes;    /* broadcast bytes transmitted */
++	__u32   tx_bc_packets;  /* broadcast packets transmitted */
++	__u32   rx_uc_bytes;    /* unicast bytes recieved */
++	__u32   rx_uc_packets;  /* unicast packets recieved */
++	__u32   tx_uc_bytes;    /* unicast bytes transmitted */
++	__u32   tx_uc_packets;  /* unicast packets transmitted */
++#endif
+ };
+ 
+ /**
+@@ -242,6 +255,19 @@
+ 	__u64	tx_heartbeat_errors;
+ 	__u64	tx_window_errors;
+ 
++#if defined(CONFIG_RTK_NETIF_EXTRA_STATS)
++	__u64	rx_mc_bytes;	/* multicast bytes recieved */	 
++	__u64	tx_mc_bytes;	/* multicast bytes transmitted */
++	__u64	tx_mc_packets;	/* multicast packets transmitted */
++	__u64	rx_bc_bytes;	/* broadcast bytes recieved */
++	__u64	rx_bc_packets;	/* broadcast packets recieved */
++	__u64	tx_bc_bytes;	/* broadcast bytes transmitted */
++	__u64	tx_bc_packets;	/* broadcast packets transmitted */
++	__u64	rx_uc_bytes;	/* unicast bytes recieved */
++	__u64	rx_uc_packets;	/* unicast packets recieved */
++	__u64	tx_uc_bytes;	/* unicast bytes transmitted */
++	__u64	tx_uc_packets;	/* unicast packets transmitted */
++#endif
+ 	/* for cslip etc */
+ 	__u64	rx_compressed;
+ 	__u64	tx_compressed;
+--- a/include/uapi/linux/if_tunnel.h
++++ b/include/uapi/linux/if_tunnel.h
+@@ -21,6 +21,13 @@
+ #define SIOCADD6RD      (SIOCDEVPRIVATE + 9)
+ #define SIOCDEL6RD      (SIOCDEVPRIVATE + 10)
+ #define SIOCCHG6RD      (SIOCDEVPRIVATE + 11)
++#define SIOCSETFMRSRULE	(SIOCDEVPRIVATE + 12)
++
++/**
++* Can not use macro to limit SIOCSETPSID definition, 
++* because it will exist compile error with log "leak CONFIG_xx to user-space"
++*/
++#define SIOCSETPSID		(SIOCDEVPRIVATE + 13)
+ 
+ #define GRE_CSUM	__cpu_to_be16(0x8000)
+ #define GRE_ROUTING	__cpu_to_be16(0x4000)
+@@ -77,10 +84,23 @@
+ 	IFLA_IPTUN_ENCAP_DPORT,
+ 	IFLA_IPTUN_COLLECT_METADATA,
+ 	IFLA_IPTUN_FWMARK,
++	IFLA_IPTUN_FMRS,
+ 	__IFLA_IPTUN_MAX,
+ };
+ #define IFLA_IPTUN_MAX	(__IFLA_IPTUN_MAX - 1)
+ 
++enum {
++	IFLA_IPTUN_FMR_UNSPEC,
++	IFLA_IPTUN_FMR_IP6_PREFIX,
++	IFLA_IPTUN_FMR_IP4_PREFIX,
++	IFLA_IPTUN_FMR_IP6_PREFIX_LEN,
++	IFLA_IPTUN_FMR_IP4_PREFIX_LEN,
++	IFLA_IPTUN_FMR_EA_LEN,
++	IFLA_IPTUN_FMR_OFFSET,
++	__IFLA_IPTUN_FMR_MAX,
++};
++#define IFLA_IPTUN_FMR_MAX (__IFLA_IPTUN_FMR_MAX - 1)
++
+ enum tunnel_encap_types {
+ 	TUNNEL_ENCAP_NONE,
+ 	TUNNEL_ENCAP_FOU,
+--- a/include/uapi/linux/in6.h
++++ b/include/uapi/linux/in6.h
+@@ -54,6 +54,12 @@
+ 	struct in6_addr		sin6_addr;      /* IPv6 address */
+ 	__u32			sin6_scope_id;  /* scope id (new in RFC2553) */
+ };
++struct in6_pktinfo_rtk {
++        struct in6_addr ipi6_addr;
++        int             ipi6_ifindex;
++        int     from_dev_ifindex;
++        int     from_dev_ifindex_valid;
++};
+ #endif /* __UAPI_DEF_SOCKADDR_IN6 */
+ 
+ #if __UAPI_DEF_IPV6_MREQ
+@@ -205,6 +211,7 @@
+ #define IPV6_XFRM_POLICY	35
+ #define IPV6_HDRINCL		36
+ 
++#define IPV6_ADD_IN_MEMBERSHIP	37
+ /*
+  * Multicast:
+  * Following socket options are shared between IPv4 and IPv6.
+@@ -291,6 +298,9 @@
+ #define IPV6_RECVFRAGSIZE	77
+ #define IPV6_FREEBIND		78
+ 
++
++#define IPV6_RECVPKTINFO_RTK	100
++#define IPV6_PKTINFO_RTK		101
+ /*
+  * Multicast Routing:
+  * see include/uapi/linux/mroute6.h.
+--- a/include/uapi/linux/in.h
++++ b/include/uapi/linux/in.h
+@@ -169,6 +169,10 @@
+ #define IP_LOCAL_PORT_RANGE		51
+ #define IP_PROTOCOL			52
+ 
++#define IP_ADD_IN_MEMBERSHIP  53
++
++#define IP_PKTINFO_RTK 100
++
+ #define MCAST_EXCLUDE	0
+ #define MCAST_INCLUDE	1
+ 
+@@ -252,6 +256,13 @@
+ 	struct in_addr	ipi_spec_dst;
+ 	struct in_addr	ipi_addr;
+ };
++struct in_pktinfo_rtk {
++	int		ipi_ifindex;
++	struct in_addr	ipi_spec_dst;
++	struct in_addr	ipi_addr;
++	int 	from_dev_ifindex;
++	int 	from_dev_ifindex_valid;
++};
+ #endif
+ 
+ /* Structure describing an Internet (IP) socket address. */
+--- a/include/uapi/linux/netlink.h
++++ b/include/uapi/linux/netlink.h
+@@ -23,6 +23,7 @@
+ #define NETLINK_DNRTMSG		14	/* DECnet routing messages (obsolete) */
+ #define NETLINK_KOBJECT_UEVENT	15	/* Kernel messages to userspace */
+ #define NETLINK_GENERIC		16
++#define NETLINK_REALTEK_TR142   17      /* Realtek tr-142 module used*/
+ /* leave room for NETLINK_DM (DM Events) */
+ #define NETLINK_SCSITRANSPORT	18	/* SCSI Transports */
+ #define NETLINK_ECRYPTFS	19
+@@ -32,6 +33,23 @@
+ 
+ #define NETLINK_INET_DIAG	NETLINK_SOCK_DIAG
+ 
++/* defined by RTK */
++
++#define NETLINK_WLAN_MANAGER			27	/*used by user/wlan_manager*/
++#define TF_NETLINK_USER				28		/*used by user CMCC and YUEME TrafficDetailProcess*/
++
++#define NETLINK_RTK_EVENTD 			29		/*used by AP user*/
++#define NETLINK_RTK_WLAN_EVENT		29		/*used by PON user*/
++
++#define NETLINK_PPPOE_MONITOR			30	/*used by user/ppp-monitor*/
++
++#define NETLINK_RTK 				31		/*used by kernel eashmesh*/
++
++#define NETLINK_USER 				NETLINK_RTK		/*used by user/andlink and user/opencapwap*/
++
++//#define NETLINK_RPC_PCI_CLNT 		31		/*used by user/qcsapi*/
++
++
+ #define MAX_LINKS 32		
+ 
+ struct sockaddr_nl {
+--- a/include/uapi/linux/ppp-ioctl.h
++++ b/include/uapi/linux/ppp-ioctl.h
+@@ -13,6 +13,7 @@
+ 
+ #include <linux/types.h>
+ #include <linux/compiler.h>
++#include <linux/if.h>
+ #include <linux/ppp_defs.h>
+ 
+ /*
+@@ -82,7 +83,8 @@
+ /*
+  * Ioctl definitions.
+  */
+-
++#define PPPIOCGTIMEOUT	_IOR('t', 92, int)  /* get configuration flags */
++#define PPPIOCSTIMEOUT	_IOW('t', 91, int)  /* set configuration flags */
+ #define	PPPIOCGFLAGS	_IOR('t', 90, int)	/* get configuration flags */
+ #define	PPPIOCSFLAGS	_IOW('t', 89, int)	/* set configuration flags */
+ #define	PPPIOCGASYNCMAP	_IOR('t', 88, int)	/* get async map */
+@@ -122,4 +124,12 @@
+ #define SIOCGPPPVER     (SIOCDEVPRIVATE + 1)	/* NEVER change this!! */
+ #define SIOCGPPPCSTATS  (SIOCDEVPRIVATE + 2)
+ 
++// RTK_PPP_IF_NS
++struct ppp_if_unit_ns {
++	int unit;
++	int ns_fd;
++	char ifname[IFNAMSIZ];
++};
++#define PPPIOCNEWUNITEXT    _IOWR('t', 200, struct ppp_if_unit_ns)  /* create new ppp unit */
++
+ #endif /* _PPP_IOCTL_H */
+--- a/include/uapi/linux/serial_core.h
++++ b/include/uapi/linux/serial_core.h
+@@ -234,4 +234,7 @@
+ /* Generic type identifier for ports which type is not important to userspace. */
+ #define PORT_GENERIC	(-1)
+ 
++/* Cortina SoC - place here to prevent merge conflict later */
++#define PORT_CORTINA    199
++
+ #endif /* _UAPILINUX_SERIAL_CORE_H */
+--- a/include/uapi/linux/sockios.h
++++ b/include/uapi/linux/sockios.h
+@@ -164,6 +164,12 @@
+  *	THESE IOCTLS ARE _DEPRECATED_ AND WILL DISAPPEAR IN 2.5.X -DaveM
+  */
+  
++/* for Realtek private IOCTL 0x89c0 to 0x89cf */
++#define SIOCETHTEST     0x89c0
++#define SIOCSIFSMUX     0x89c1      /* CONFIG_RTL_MULTI_ETH_WAN */
++#define SIOCSIFVLANMAP	0x89c2      /* CONFIG_RTL867X_VLAN_MAPPING */
++#define SIOCSITFGROUP	0x89c3      /* CONFIG_RTK_DEV_AP */
++
+ #define SIOCDEVPRIVATE	0x89F0	/* to 89FF */
+ 
+ /*
+--- a/Makefile
++++ b/Makefile
+@@ -274,6 +274,13 @@
+ 
+ export srctree := $(if $(KBUILD_EXTMOD),$(abs_srctree),$(srcroot))
+ 
++# Realtek Luna SDK compatibility: the vendor rtl86900 Makefiles expect these
++# from the SDK top-level build; provide in-tree equivalents.
++export KDIR := $(abs_srctree)
++export NETDIR := $(abs_srctree)/drivers/net/ethernet/realtek
++export APOLLODIR := $(NETDIR)/rtl86900
++export SDKDIR := $(APOLLODIR)/sdk
++
+ ifdef building_out_of_srctree
+ export VPATH := $(srcroot)
+ else
+--- a/scripts/Makefile.lib
++++ b/scripts/Makefile.lib
+@@ -1,4 +1,11 @@
+ # SPDX-License-Identifier: GPL-2.0
++# Compat for old vendor (Realtek Luna SDK) Makefiles that still use the
++# pre-5.x EXTRA_*FLAGS spelling of ccflags-y and friends.
++asflags-y  += $(EXTRA_AFLAGS)
++ccflags-y  += $(EXTRA_CFLAGS)
++cppflags-y += $(EXTRA_CPPFLAGS)
++ldflags-y  += $(EXTRA_LDFLAGS)
++
+ 
+ # Finds the multi-part object the current object will be linked into.
+ # If the object belongs to two or more multi-part objects, list them all.
