@@ -822,6 +822,12 @@
  	up.regshift = 2;
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
  	up.iotype = UPIO_MEM32;
+@@ -107,4 +107,4 @@
+ 
+ 	return 0;
+ }
+-device_initcall(plat_serial_init);
++/* device_initcall(plat_serial_init); -- disabled: DT 8250_of owns ttyS0 with correct GIC_EXT_UART0 irq; vendor path registered wrong BSP_IRQ_UART(virq20) first and blocked the DT irq */
 --- a/arch/mips/rtl9607c/setup.c
 +++ b/arch/mips/rtl9607c/setup.c
 @@ -161,7 +161,7 @@
@@ -2469,6 +2475,15 @@
  #include <linux/etherdevice.h>
  #include <linux/init.h>
  #include <linux/pci.h>
+@@ -934,7 +936,7 @@
+     if (!is_valid_ether_addr(addr->sa_data))
+     	return -EADDRNOTAVAIL;
+ 
+-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
++	eth_hw_addr_set(dev, addr->sa_data);
+ 	
+ 	for(gmac=0 ; gmac<MAX_GMAC_NUM ; gmac++)
+ 	{
 @@ -1757,7 +1759,7 @@
  		GMAC_TRUE
  #endif
@@ -2927,7 +2942,37 @@
  };
  MODULE_DEVICE_TABLE(of, of_platform_rtk_gmac_table);
  
-@@ -12363,7 +12366,7 @@
+@@ -12082,8 +12085,12 @@
+ 	dev_temp->base_addr = (unsigned long) base;
+ 
+ 	/* read MAC address from EEPROM */
+-	for (i = 0; i < 3; i++)
+-		((u16 *) (dev_temp->dev_addr))[i] = i;
++	{
++		u8 __dummy_mac[ETH_ALEN];
++		for (i = 0; i < 3; i++)
++			((u16 *) __dummy_mac)[i] = i;
++		eth_hw_addr_set(dev_temp, __dummy_mac);
++	}
+ 
+ 	DEV2CP(dev_temp) = &re_private_data_root;
+ 	rtl8686_dev_table[0].dev_instant = dev_temp;
+@@ -12123,8 +12130,12 @@
+ 			goto err_out_iomap;
+ 		}
+ 		/* read MAC address from EEPROM */
+-		for (j = 0; j < 3; j++)
+-			((u16 *) (dev->dev_addr))[j] = j;
++		{
++			u8 __dummy_mac[ETH_ALEN];
++			for (j = 0; j < 3; j++)
++				((u16 *) __dummy_mac)[j] = j;
++			eth_hw_addr_set(dev, __dummy_mac);
++		}
+ 
+ 		DEV2CP(dev) = &re_private_data_root;
+ 		if (ROOTDEV->dev.parent)
+@@ -12363,7 +12374,7 @@
  
  #ifdef RX_NAPI_MODE
  	re_private_data[gmac].napi.dev = dev;
@@ -2936,7 +2981,7 @@
  #endif
  
  	if(!netdev_registered)
-@@ -12392,7 +12395,7 @@
+@@ -12392,7 +12403,7 @@
  
  #ifdef CONFIG_RTL8686_SWITCH
  		if(timer_pending(&re_private_data_root.rx_pause_by_software_interrupt_timer))

@@ -107,4 +107,4 @@ int __init plat_serial_init(void)
 
 	return 0;
 }
-device_initcall(plat_serial_init);
+/* device_initcall(plat_serial_init); -- disabled: DT 8250_of owns ttyS0 with correct GIC_EXT_UART0 irq; vendor path registered wrong BSP_IRQ_UART(virq20) first and blocked the DT irq */

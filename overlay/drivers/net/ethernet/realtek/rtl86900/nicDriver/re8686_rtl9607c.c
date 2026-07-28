@@ -936,7 +936,7 @@ static int re8670_set_mac_addr(struct net_device *dev, void *addr_p)
     if (!is_valid_ether_addr(addr->sa_data))
     	return -EADDRNOTAVAIL;
 
-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
+	eth_hw_addr_set(dev, addr->sa_data);
 	
 	for(gmac=0 ; gmac<MAX_GMAC_NUM ; gmac++)
 	{
@@ -12085,8 +12085,12 @@ static int rtk_gmac_register_root_netdev(unsigned int base, int irq)
 	dev_temp->base_addr = (unsigned long) base;
 
 	/* read MAC address from EEPROM */
-	for (i = 0; i < 3; i++)
-		((u16 *) (dev_temp->dev_addr))[i] = i;
+	{
+		u8 __dummy_mac[ETH_ALEN];
+		for (i = 0; i < 3; i++)
+			((u16 *) __dummy_mac)[i] = i;
+		eth_hw_addr_set(dev_temp, __dummy_mac);
+	}
 
 	DEV2CP(dev_temp) = &re_private_data_root;
 	rtl8686_dev_table[0].dev_instant = dev_temp;
@@ -12126,8 +12130,12 @@ static int rtk_gmac_register_other_netdev(void)
 			goto err_out_iomap;
 		}
 		/* read MAC address from EEPROM */
-		for (j = 0; j < 3; j++)
-			((u16 *) (dev->dev_addr))[j] = j;
+		{
+			u8 __dummy_mac[ETH_ALEN];
+			for (j = 0; j < 3; j++)
+				((u16 *) __dummy_mac)[j] = j;
+			eth_hw_addr_set(dev, __dummy_mac);
+		}
 
 		DEV2CP(dev) = &re_private_data_root;
 		if (ROOTDEV->dev.parent)

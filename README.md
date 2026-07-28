@@ -110,28 +110,38 @@ Stale build artifacts are the single most expensive mistake here.
 
 ## Status
 
-**Build-verified. Not yet booted on hardware.**
+**Boots on real hardware.** RAM-booted over serial on an RTL9607C; reached an
+s6-supervised shell with `uname -r` = 7.1.5.
 
-- `vmlinux` links on **7.1.5**: 24 MB, ELF 32-bit MSB MIPS32r2, SMP PREEMPT,
-  `rtl9607c_engboard` builtin DTB.
-- The whole vendor stack is linked in — FleetConntrack (1572 syms), GPON (1995),
-  `dal_rtl9607c` (892), EPON (543), switch, GPIO, GMAC.
-- Rootfs builds through the SDK: static busybox 1.37.0 + s6 (95 binaries),
-  684 initramfs entries.
-- `images/uImage` packages: 8.5 MiB lzma, load `0x80001000`.
-- `overlay/` is proven sufficient: pristine 7.1.5 + SDK vendor + overlay
-  reproduces the built tree with **zero differing source files**.
+Confirmed working on silicon:
+- 4-CPU SMP (interAptiv MT, VPE {2,2}), 231/256 MB, L2 256 kB, GIC clocksource
+- ttyS0 console (TX and RX), GPIO (3 banks + IRQs), Luna watchdog, gpio-keys
+- Realtek switch/xPON core, switch link-change IRQ, interrupt broadcaster
+- FleetConntrack manager across 4 CPUs; bridge, 802.1Q, PPPoE/PPTP/L2TP
+- eth0 up, br0 forwarding, MAC provisioned from the `ethaddr=` cmdline
+- s6: `s6-rc-compile` + `s6-svscan` + `s6-hpd`
 
 The entire 6.18 → 7.1 jump cost **one** source change in the vendor tree (a lost
 transitive `#include`), four merge conflicts, and one Kconfig-strictness fix.
 See [`docs/porting-6.18-to-7.1.md`](docs/porting-6.18-to-7.1.md).
 
-> **Known bug in the shared SDK.** `rootfs/build-rootfs.sh:72` chmods
-> `etc/s6/rc.boot`, which no longer exists in the tracked skeleton, so the script
-> exits 1 even though the rootfs tree is complete. Under `set -e` that would kill
-> the build — in both BSPs. `build.sh` here works around it by verifying the tree
-> (`init`, `busybox`, `getty-console/run`) and continuing with a warning, but the
-> real fix is a one-line Phoebus-SDK commit. See PORT_NOTES.md.
+The first boot turned up four defects, all now fixed (see `PORT_NOTES.md`); the
+fixed image is build-verified but **not yet re-booted on hardware**. Two of them
+were inherited: BSP-6's committed `overlay/` is missing two fixes its own notes
+describe as hardware-confirmed (the `eth_hw_addr_set` conversions and the
+disabled `plat_serial_init` initcall). An audit of all 94 of BSP-6's overlay
+files against its live tree found exactly those two stale.
+
+> **Known bugs in the shared SDK**, all worked around in `build.sh` rather than
+> patched in `sdk/`, because PhoebusBSP-6 consumes that same skeleton:
+> - `rootfs/build-rootfs.sh:72` chmods `etc/s6/rc.boot`, which no longer exists,
+>   so the script exits 1 and `set -e` would kill the build. Worked around by
+>   verifying the tree and continuing (step 5).
+> - `etc/s6/scripts/network-up` ends with `[ test ] && echo` inside a loop, so it
+>   exits 1 whenever the last interface has no carrier — which fails the whole
+>   s6-rc bundle. Worked around by appending `exit 0` (step 5b).
+> - `/init` hardcodes `Linux 6.18.39` in its banner. Rewritten to `$(uname -r)`
+>   (step 5b).
 
 xPON/GPON/EPON retained and Kconfig-selectable. Wi-Fi and PCI are off — see Scope.
 
