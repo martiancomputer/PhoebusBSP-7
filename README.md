@@ -14,23 +14,17 @@ rebases onto another point release without touching the port.
 
 ## Scope
 
-This BSP builds a **Wi-Fi-less** kernel: SoC platform (SMP, GIC, timers, console,
-GPIO, watchdog), the Realtek switch core, GPON/EPON, the built-in NIC and
-FleetConntrack. The vendor Wi-Fi drivers (`g6_wifi_driver` for the 5 GHz
-RTL8832BR, `rtl8192cd` for the 2.4 GHz RTL8192F) are **not** part of this port.
+Full board support: SoC platform (SMP, GIC, timers, console, GPIO, watchdog),
+the Realtek switch core, GPON/EPON, the built-in NIC, FleetConntrack, PCIe, and
+**both Wi-Fi radios** — `g6_wifi_driver` (5 GHz RTL8832BR) and `rtl8192cd`
+(2.4 GHz RTL8192F).
 
-They are not in Phoebus-SDK — the shared SDK ships pristine vendor code, and the
-Wi-Fi trees were never committed to it, so neither BSP can graft them from a
-clean clone today. Adding them to the SDK is the prerequisite for a Wi-Fi-capable
-BSP-7; until then this tree deliberately does not reference them, and
-`CONFIG_WLAN_VENDOR_REALTEK` is off. `CONFIG_PCI` is off with it, matching
-BSP-6's committed config.
-
-The port work that *would* be needed is bounded and known: BSP-6's 6.18 Wi-Fi
-port touches ~37 files in `g6_wifi_driver` and ~31 in `rtl8192cd`, and the one
-7.1-specific blocker is already solved here — see the Kconfig section of
-[`docs/porting-6.18-to-7.1.md`](docs/porting-6.18-to-7.1.md), which covers both
-Wi-Fi Kconfigs.
+> **The image has radios but no Wi-Fi userspace.** The SDK's
+> `rootfs/build-rootfs.sh` does not install `hostapd`, `dropbear` or the `iw*`
+> tools, and never copies `rootfs/usr/`, even though the matching s6 services are
+> in the boot bundle. So a clean build boots both radios with their RF
+> calibration tables but cannot bring up an AP, accept SSH, or get a WAN address.
+> This affects PhoebusBSP-6 identically; see PORT_NOTES.md.
 
 ## What's here (the *port*, not the kernel)
 
@@ -41,9 +35,9 @@ configs/
                     squashfs, initramfs, netfilter legacy backend for NAT)
 overlay/        exact ported sources for the files we changed vs upstream 7.1.5
                 (arch/mips platform + Kconfig/Makefile wiring, the rtl86900 SDK 7.1
-                 API edits, header deltas, scripts/Makefile.lib). build.sh copies
-                this over the pristine+vendor tree — reliable against the SDK's
-                CRLF files.
+                 API edits, the Wi-Fi cfg80211/PPPoE port, header deltas,
+                 scripts/Makefile.lib). build.sh copies this over the
+                 pristine+vendor tree — reliable against the SDK's CRLF files.
 docs/
   port-vs-upstream-7.1.5.diff   changelog of every edit vs pristine 7.1.5
   porting-6.18-to-7.1.md        what actually broke moving off the LTS, and why
@@ -121,29 +115,27 @@ Confirmed working on silicon:
 - eth0 up, br0 forwarding, MAC provisioned from the `ethaddr=` cmdline
 - s6: `s6-rc-compile` + `s6-svscan` + `s6-hpd`
 
-The entire 6.18 → 7.1 jump cost **one** source change in the vendor tree (a lost
-transitive `#include`), four merge conflicts, and one Kconfig-strictness fix.
-See [`docs/porting-6.18-to-7.1.md`](docs/porting-6.18-to-7.1.md).
+That boot was the pre-Wi-Fi image. It turned up four defects, all since fixed —
+two of them inherited from stale files in BSP-6's committed overlay rather than
+caused by 7.1. See `PORT_NOTES.md`.
 
-The first boot turned up four defects, all now fixed (see `PORT_NOTES.md`); the
-fixed image is build-verified but **not yet re-booted on hardware**. Two of them
-were inherited: BSP-6's committed `overlay/` is missing two fixes its own notes
-describe as hardware-confirmed (the `eth_hw_addr_set` conversions and the
-disabled `plat_serial_init` initcall). An audit of all 94 of BSP-6's overlay
-files against its live tree found exactly those two stale.
+**Wi-Fi is now in**, and link-verified but **not yet booted**: both radios build
+into one kernel (`rtw_`/`phl_`/`halbb`/`halrf` for the 5 GHz RTL8832BR,
+`rtl8192cd` for the 2.4 GHz RTL8192F), both PCI ID tables present, zero
+duplicate symbols, switch/GPON unregressed.
 
-> **Known bugs in the shared SDK**, all worked around in `build.sh` rather than
-> patched in `sdk/`, because PhoebusBSP-6 consumes that same skeleton:
-> - `rootfs/build-rootfs.sh:72` chmods `etc/s6/rc.boot`, which no longer exists,
->   so the script exits 1 and `set -e` would kill the build. Worked around by
->   verifying the tree and continuing (step 5).
-> - `etc/s6/scripts/network-up` ends with `[ test ] && echo` inside a loop, so it
->   exits 1 whenever the last interface has no carrier — which fails the whole
->   s6-rc bundle. Worked around by appending `exit 0` (step 5b).
-> - `/init` hardcodes `Linux 6.18.39` in its banner. Rewritten to `$(uname -r)`
->   (step 5b).
+The non-Wi-Fi part of the 6.18 → 7.1 jump cost **one** source change in the
+vendor tree (a lost transitive `#include`), four merge conflicts, and one
+Kconfig-strictness fix. Wi-Fi added three more API changes — `cfg80211_ops`
+moving to `wireless_dev *`, the PPPoE uapi flexible arrays being hidden from
+kernel code, and `<linux/of_gpio.h>` being removed. All are written up in
+[`docs/porting-6.18-to-7.1.md`](docs/porting-6.18-to-7.1.md).
 
-xPON/GPON/EPON retained and Kconfig-selectable. Wi-Fi and PCI are off — see Scope.
+The SDK bugs this BSP used to work around are all fixed upstream as of
+`c2cf097`, so `build.sh` carries no workarounds. What remains is the rootfs
+userspace gap described under Scope.
+
+xPON/GPON/EPON retained and Kconfig-selectable.
 
 ## Relationship to PhoebusBSP-6
 

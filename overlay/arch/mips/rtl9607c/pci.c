@@ -9,7 +9,12 @@
 #include <linux/interrupt.h>
 #include <dt-bindings/interrupt-controller/mips-gic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
-#include <linux/of_gpio.h>
+/* <linux/of_gpio.h> and of_get_named_gpio() were removed in 7.1 along with the
+ * rest of the legacy OF GPIO lookup. The number-based API in <linux/gpio.h>
+ * that the rest of this file uses is still there; only the DT lookup had to be
+ * rewritten. See __rtk_pci_controller_init(). */
+#include <linux/gpio/consumer.h>
+#include <linux/gpio/driver.h>
 #include <linux/pci.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -507,12 +512,42 @@ static int __rtk_pci_controller_init(struct rtk_pci_controller *ctrl, const stru
 		return -ENODEV;
 	}
 
-	ret = of_get_named_gpio(node, gpio_rst_name, 0);
-	if (ret < 0) {
-		pr_err("Port%d: Cannot get device gpio reset pin from Device Tree. Initialization is aborted\n",
-		       ctrl->port);
-		return ret;
-	} else {
+	/* Was of_get_named_gpio(node, gpio_rst_name, 0). That, and all of
+	 * <linux/of_gpio.h>, is gone in 7.1. The board DT names the pin with a
+	 * bare property ("pci0_gpio_rst"), not the "<con-id>-gpios" form the
+	 * fwnode helpers require, so the phandle is resolved by hand and turned
+	 * back into a legacy number for the gpio_request_one()/gpio_to_desc()
+	 * calls further down, which still exist. */
+	{
+		struct of_phandle_args args;
+		struct gpio_device *gdev;
+		struct gpio_desc *desc;
+
+		ret = of_parse_phandle_with_args(node, gpio_rst_name,
+						 "#gpio-cells", 0, &args);
+		if (ret < 0) {
+			pr_err("Port%d: Cannot get device gpio reset pin from Device Tree. Initialization is aborted\n",
+			       ctrl->port);
+			return ret;
+		}
+
+		gdev = gpio_device_find_by_fwnode(of_fwnode_handle(args.np));
+		of_node_put(args.np);
+		if (!gdev) {
+			pr_err("Port%d: gpio controller for the reset pin is not registered yet\n",
+			       ctrl->port);
+			return -EPROBE_DEFER;
+		}
+
+		desc = gpio_device_get_desc(gdev, args.args[0]);
+		gpio_device_put(gdev);
+		if (IS_ERR(desc)) {
+			pr_err("Port%d: Cannot get device gpio reset pin from Device Tree. Initialization is aborted\n",
+			       ctrl->port);
+			return PTR_ERR(desc);
+		}
+
+		ret = desc_to_gpio(desc);
 		pr_info("Port%d Device gpio reset pin (%d)\n", ctrl->port, ret);
 	}
 	spin_lock_init(&ctrl->lock);

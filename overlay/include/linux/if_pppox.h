@@ -94,4 +94,20 @@ extern spinlock_t stMagic_num_lock;
 
 #endif
 
+/* 7.1 hid the flexible-array members of the uapi PPPoE structs behind
+ * #ifndef __KERNEL__ (uapi hardening):
+ *
+ *   struct pppoe_tag { __be16 tag_type; __be16 tag_len;
+ *   #ifndef __KERNEL__
+ *           char tag_data[];
+ *   #endif  } __packed;
+ *
+ * and likewise `struct pppoe_tag tag[]` in struct pppoe_hdr. In-kernel code is
+ * expected to compute those offsets itself. Both Realtek bridge-extension
+ * files (rtl8192cd/8192cd_br_ext.c and g6_wifi_driver/core/rtw_br_ext.c) parse
+ * PPPoE tags, so the accessors live here rather than being duplicated.
+ * Both structs are __packed, so sizeof() is the exact on-wire header length. */
+#define pppoe_hdr_tags(ph)	((unsigned char *)((ph) + 1))
+#define pppoe_tag_data(t)	((unsigned char *)((t) + 1))
+
 #endif /* !(__LINUX_IF_PPPOX_H) */

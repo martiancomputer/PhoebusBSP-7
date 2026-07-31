@@ -697,18 +697,25 @@
              printk string
 --- a/arch/mips/rtl9607c/pci.c
 +++ b/arch/mips/rtl9607c/pci.c
-@@ -5,6 +5,10 @@
+@@ -5,7 +5,16 @@
  #include <linux/kernel.h>
  #include <linux/module.h>
  #include <linux/of.h>
+-#include <linux/of_gpio.h>
 +#include <linux/irqdomain.h>
 +#include <linux/interrupt.h>
 +#include <dt-bindings/interrupt-controller/mips-gic.h>
 +#include <dt-bindings/interrupt-controller/irq.h>
- #include <linux/of_gpio.h>
++/* <linux/of_gpio.h> and of_get_named_gpio() were removed in 7.1 along with the
++ * rest of the legacy OF GPIO lookup. The number-based API in <linux/gpio.h>
++ * that the rest of this file uses is still there; only the DT lookup had to be
++ * rewritten. See __rtk_pci_controller_init(). */
++#include <linux/gpio/consumer.h>
++#include <linux/gpio/driver.h>
  #include <linux/pci.h>
  #include <linux/proc_fs.h>
-@@ -392,6 +396,40 @@
+ #include <linux/seq_file.h>
+@@ -392,6 +401,40 @@
  	return 0;
  }
  
@@ -749,7 +756,7 @@
  int pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
  {
  	struct rtk_pci_controller *ctrl = pci_bus_to_rtk_controller(dev->bus);
-@@ -460,7 +498,6 @@
+@@ -460,7 +503,6 @@
  static int __rtk_pci_controller_init(struct rtk_pci_controller *ctrl, const struct pcie_para *phy, const char *gpio_rst_name)
  {
  	struct device_node *node;
@@ -757,16 +764,56 @@
  	int ret;
  
  	node = of_find_node_by_name(NULL, "board_setting");
-@@ -470,7 +507,7 @@
+@@ -470,12 +512,42 @@
  		return -ENODEV;
  	}
  
 -	ret = of_get_named_gpio_flags(node, gpio_rst_name, 0, &flags);
-+	ret = of_get_named_gpio(node, gpio_rst_name, 0);
- 	if (ret < 0) {
- 		pr_err("Port%d: Cannot get device gpio reset pin from Device Tree. Initialization is aborted\n",
- 		       ctrl->port);
-@@ -499,7 +536,7 @@
+-	if (ret < 0) {
+-		pr_err("Port%d: Cannot get device gpio reset pin from Device Tree. Initialization is aborted\n",
+-		       ctrl->port);
+-		return ret;
+-	} else {
++	/* Was of_get_named_gpio(node, gpio_rst_name, 0). That, and all of
++	 * <linux/of_gpio.h>, is gone in 7.1. The board DT names the pin with a
++	 * bare property ("pci0_gpio_rst"), not the "<con-id>-gpios" form the
++	 * fwnode helpers require, so the phandle is resolved by hand and turned
++	 * back into a legacy number for the gpio_request_one()/gpio_to_desc()
++	 * calls further down, which still exist. */
++	{
++		struct of_phandle_args args;
++		struct gpio_device *gdev;
++		struct gpio_desc *desc;
++
++		ret = of_parse_phandle_with_args(node, gpio_rst_name,
++						 "#gpio-cells", 0, &args);
++		if (ret < 0) {
++			pr_err("Port%d: Cannot get device gpio reset pin from Device Tree. Initialization is aborted\n",
++			       ctrl->port);
++			return ret;
++		}
++
++		gdev = gpio_device_find_by_fwnode(of_fwnode_handle(args.np));
++		of_node_put(args.np);
++		if (!gdev) {
++			pr_err("Port%d: gpio controller for the reset pin is not registered yet\n",
++			       ctrl->port);
++			return -EPROBE_DEFER;
++		}
++
++		desc = gpio_device_get_desc(gdev, args.args[0]);
++		gpio_device_put(gdev);
++		if (IS_ERR(desc)) {
++			pr_err("Port%d: Cannot get device gpio reset pin from Device Tree. Initialization is aborted\n",
++			       ctrl->port);
++			return PTR_ERR(desc);
++		}
++
++		ret = desc_to_gpio(desc);
+ 		pr_info("Port%d Device gpio reset pin (%d)\n", ctrl->port, ret);
+ 	}
+ 	spin_lock_init(&ctrl->lock);
+@@ -499,7 +571,7 @@
  	int len;
  	u8 addr;
  	u16 val;
@@ -775,7 +822,7 @@
  	void __iomem *mdiobase = p->hostext_base+0x0;
  
  	len = min(sizeof(buf), count);
-@@ -593,7 +630,7 @@
+@@ -593,7 +665,7 @@
  
  static int rtk_pcie_phy_open(struct inode *inode, struct file *file)
  {
@@ -784,7 +831,7 @@
  }
  
  
-@@ -641,6 +678,7 @@
+@@ -641,6 +713,7 @@
  	}
  	p->gpiod = gpio_to_desc(p->rst_data);
  
@@ -792,7 +839,7 @@
  	p->is_linked = rtk_pcie_reset(p);
  	printk(" Port%d link=%d irq=%d\n",p->port,p->is_linked,p->irq);
  	if (p->is_linked)
-@@ -667,8 +705,9 @@
+@@ -667,8 +740,9 @@
  	}
  	p->gpiod = gpio_to_desc(p->rst_data);
  
@@ -3609,6 +3656,1190 @@
  	}
  	return;
  }
+--- a/drivers/net/wireless/realtek/g6_wifi_driver/core/rtw_br_ext.c
++++ b/drivers/net/wireless/realtek/g6_wifi_driver/core/rtw_br_ext.c
+@@ -72,7 +72,7 @@
+ 	unsigned char *cur_ptr, *start_ptr;
+ 	unsigned short tagLen, tagType;
+ 
+-	start_ptr = cur_ptr = (unsigned char *)ph->tag;
++	start_ptr = cur_ptr = pppoe_hdr_tags(ph);
+ 	while ((cur_ptr - start_ptr) < ntohs(ph->length)) {
+ 		/* prevent un-alignment access */
+ 		tagType = (unsigned short)((cur_ptr[0] << 8) + cur_ptr[1]);
+@@ -97,9 +97,9 @@
+ 
+ 	skb_put(skb, data_len);
+ 	/* have a room for new tag */
+-	_rtw_memmove(((unsigned char *)ph->tag + data_len), (unsigned char *)ph->tag, ntohs(ph->length));
++	_rtw_memmove((pppoe_hdr_tags(ph) + data_len), pppoe_hdr_tags(ph), ntohs(ph->length));
+ 	ph->length = htons(ntohs(ph->length) + data_len);
+-	_rtw_memcpy((unsigned char *)ph->tag, tag, data_len);
++	_rtw_memcpy(pppoe_hdr_tags(ph), tag, data_len);
+ 	return data_len;
+ }
+ 
+@@ -1120,8 +1120,8 @@
+ 								return -1;
+ 							}
+ 
+-							_rtw_memcpy(tag->tag_data + MAGIC_CODE_LEN + RTL_RELAY_TAG_LEN,
+-							       pOldTag->tag_data, old_tag_len);
++							_rtw_memcpy(pppoe_tag_data(tag) + MAGIC_CODE_LEN + RTL_RELAY_TAG_LEN,
++							       pppoe_tag_data(pOldTag), old_tag_len);
+ 
+ 							if (skb_pull_and_merge(skb, (unsigned char *)pOldTag, TAG_HDR_LEN + old_tag_len) < 0) {
+ 								DEBUG_ERR("call skb_pull_and_merge() failed in PADI/R packet!\n");
+@@ -1134,9 +1134,9 @@
+ 						tag->tag_len = htons(MAGIC_CODE_LEN + RTL_RELAY_TAG_LEN + old_tag_len);
+ 
+ 						/* insert the magic_code+client mac in relay tag */
+-						pMagic = (unsigned short *)tag->tag_data;
++						pMagic = (unsigned short *)pppoe_tag_data(tag);
+ 						*pMagic = htons(MAGIC_CODE);
+-						_rtw_memcpy(tag->tag_data + MAGIC_CODE_LEN, skb->data + ETH_ALEN, ETH_ALEN);
++						_rtw_memcpy(pppoe_tag_data(tag) + MAGIC_CODE_LEN, skb->data + ETH_ALEN, ETH_ALEN);
+ 
+ 						/* Add relay tag */
+ 						if (__nat25_add_pppoe_tag(skb, tag) < 0)
+@@ -1197,14 +1197,14 @@
+ 						return -1;
+ 					}
+ 
+-					pMagic = (unsigned short *)tag->tag_data;
++					pMagic = (unsigned short *)pppoe_tag_data(tag);
+ 					if (ntohs(*pMagic) != MAGIC_CODE) {
+ 						DEBUG_ERR("Can't find MAGIC_CODE in %s packet!\n",
+ 							(ph->code == PADO_CODE ? "PADO" : "PADS"));
+ 						return -1;
+ 					}
+ 
+-					_rtw_memcpy(skb->data, tag->tag_data + MAGIC_CODE_LEN, ETH_ALEN);
++					_rtw_memcpy(skb->data, pppoe_tag_data(tag) + MAGIC_CODE_LEN, ETH_ALEN);
+ 
+ 					if (tagLen > MAGIC_CODE_LEN + RTL_RELAY_TAG_LEN)
+ 						offset = TAG_HDR_LEN;
+--- a/drivers/net/wireless/realtek/g6_wifi_driver/core/rtw_mlme_ext.c
++++ b/drivers/net/wireless/realtek/g6_wifi_driver/core/rtw_mlme_ext.c
+@@ -2937,6 +2937,18 @@
+ 			__func__, MAC_ARG(get_addr2_ptr(pframe)));
+ 		return _FAIL;
+ 	}
++
++	/* Phoebus: a failing connect shows three "IEEE 802.11: associated" lines
++	 * and no AP-STA-CONNECTED; a succeeding one shows exactly one. Log the
++	 * sequence number and retry bit so we can tell WHICH of the two it is:
++	 *   differing seq, retry=0  -> the client is making fresh attempts, i.e.
++	 *                              our assoc RESPONSE never reached it
++	 *   same seq, retry=1       -> the client retransmitted and our dedup
++	 *                              (which needs BOTH conditions) let it past
++	 * Those need opposite fixes, so stop guessing and measure. */
++	printk(KERN_ERR "PHOEBUS-ASSOCREQ: "MAC_FMT" seq=%d retry=%d\n",
++	       MAC_ARG(get_addr2_ptr(pframe)),
++	       precv_frame->u.hdr.attrib.seq_num, GetRetry(pframe) ? 1 : 0);
+ #ifdef CONFIG_RTW_MBO
+ 	/* AP is under BSS termination duration*/
+ 	if (pmlmepriv->mbopriv.bss_termination_phase == BSS_TERMINATION_DUR) {
+@@ -11434,8 +11446,14 @@
+ 	_adapter *primary_adapter = GET_PRIMARY_ADAPTER(padapter);
+ #endif
+ 
+-	if (rtw_rfctl_is_tx_blocked_by_ch_waiting(adapter_to_rfctl(padapter)))
++	/* Phoebus: issue_asocrsp already logs itself a few lines below
++	 * ("issue_asocrsp sta=... status=..."), so the only case not covered is
++	 * this silent early return -- which would mean we never send a response
++	 * at all and the client's retries are entirely justified. */
++	if (rtw_rfctl_is_tx_blocked_by_ch_waiting(adapter_to_rfctl(padapter))) {
++		printk(KERN_ERR "PHOEBUS-ASSOCRSP: BLOCKED by ch_waiting, not sent\n");
+ 		return;
++	}
+ 
+ 	RTW_INFO("%s sta="MAC_FMT" status=%d\n", __FUNCTION__, MAC_ARG(pstat->phl_sta->mac_addr), status);
+ 
+--- a/drivers/net/wireless/realtek/g6_wifi_driver/core/rtw_xmit.c
++++ b/drivers/net/wireless/realtek/g6_wifi_driver/core/rtw_xmit.c
+@@ -1691,6 +1691,16 @@
+ 
+ 	}
+ 
++	/* Verified on-board: EAPOL always leaves here with blocked=1 encrypt=0, i.e.
++	 * unencrypted as it must be while the peer has no PTK, so the encryption
++	 * decision is not the problem -- see the hwnat note in network-up. Still
++	 * logging it, with psta->state, because reaching this point at all is what
++	 * distinguishes "EAPOL was transmitted" from the silent PHOEBUS-TXDROP paths. */
++	if (pattrib->ether_type == ETH_P_EAPOL)
++		printk(KERN_ERR "PHOEBUS-EAPOL-TX: "MAC_FMT" state=0x%x blocked=%d encrypt=%d macid=%d\n",
++			MAC_ARG(pattrib->ra), psta->state, psta->ieee8021x_blocked,
++			pattrib->encrypt, psta->phl_sta->macid);
++
+ #ifdef CONFIG_TDLS
+ 	if (pattrib->direct_link == _TRUE) {
+ 		if (pattrib->encrypt > 0)
+@@ -2095,6 +2105,11 @@
+ 			return FAIL;
+ 		} else if (check_fwstate(pmlmepriv, WIFI_AP_STATE) == _TRUE && !(psta->state & WIFI_ASOC_STATE)) {
+ 			DBG_COUNTER(padapter->tx_logs.core_tx_upd_attrib_err_ucast_ap_link);
++			/* Phoebus: this drop is otherwise completely silent (the branch below
++			 * prints, this one never did). If EAPOL 1/4 lands here the 4-way can
++			 * only time out, which is exactly what we see post-reassociation. */
++			printk(KERN_ERR "PHOEBUS-TXDROP(A): "MAC_FMT" ethtype=%04x state=0x%x\n",
++				MAC_ARG(XF_RA), XF_ETHTYPE, psta->state);
+ 			return FAIL;
+ 		}
+ 	}
+@@ -2659,6 +2674,9 @@
+ 			goto exit;
+ 		} else if (check_fwstate(pmlmepriv, WIFI_AP_STATE) == _TRUE && !(psta->state & WIFI_ASOC_STATE)) {
+ 			DBG_COUNTER(padapter->tx_logs.core_tx_upd_attrib_err_ucast_ap_link);
++			/* Phoebus: see PHOEBUS-TXDROP(A) -- same silent drop, other TX path. */
++			printk(KERN_ERR "PHOEBUS-TXDROP(B): "MAC_FMT" ethtype=%04x state=0x%x\n",
++				MAC_ARG(pattrib->ra), pattrib->ether_type, psta->state);
+ 			res = _FAIL;
+ 			goto exit;
+ 		}
+--- a/drivers/net/wireless/realtek/g6_wifi_driver/Kconfig
++++ b/drivers/net/wireless/realtek/g6_wifi_driver/Kconfig
+@@ -224,24 +224,24 @@
+ 
+ if RTL8852CE
+ 		config WLAN0_FEM_SKY85791
++		depends on (WLAN0_RFE_TYPE_51)
+ 		bool "SKY85791 (8852CRe)"
+-		depends on WLAN0_RFE_TYPE_51
+ 
+ 		config WLAN0_FEM_KTC8570N
++		depends on (WLAN0_RFE_TYPE_51)
+ 		bool "KTC8570N (8852CRe)"
+-		depends on WLAN0_RFE_TYPE_51
+ 
+ 		config WLAN0_FEM_RTC66506
++		depends on (WLAN0_RFE_TYPE_52)
+ 		bool "RTC66506 (8852CRe)"
+-		depends on WLAN0_RFE_TYPE_52
+ 
+ 		config WLAN0_FEM_KCT8575HP
++		depends on (WLAN0_RFE_TYPE_53)
+ 		bool "KCT8575HP (8852CRe)"
+-		depends on WLAN0_RFE_TYPE_53
+ 
+ 		config WLAN0_FEM_KCT8539HE
++		depends on (WLAN0_RFE_TYPE_53)
+ 		bool "KCT8539HE (8852CRe)"
+-		depends on WLAN0_RFE_TYPE_53
+ 
+ 		config WLAN0_FEM_KCT8531HE
+ 		bool "KCT8531HE (8852CRe)"
+@@ -256,16 +256,16 @@
+ 		depends on WLAN0_RFE_TYPE_53
+ 
+ 		config WLAN0_FEM_RTC7676D
++		depends on (WLAN0_RFE_TYPE_54)
+ 		bool "RTC7676D (8852CRe)"
+-		depends on WLAN0_RFE_TYPE_54
+ 
+ 		config WLAN0_FEM_RTC7676D_08U
++		depends on (WLAN0_RFE_TYPE_54)
+ 		bool "RTC7676D_08U (8852CRe)"
+-		depends on WLAN0_RFE_TYPE_54
+ 
+ 		config WLAN0_FEM_RTC7676D1
++		depends on (WLAN0_RFE_TYPE_54)
+ 		bool "RTC7676D1 (8852CRe)"
+-		depends on WLAN0_RFE_TYPE_54
+ 
+ 		config WLAN0_FEM_RTK66587_DPX
+ 		bool "RTK66587_DPX (8852CRe)"
+@@ -277,40 +277,6 @@
+ endif
+ 
+ if RTL8832BRH
+-		config WLAN0_FEM_SKY85791
+-		bool "SKY85791 (8832BRHe)"
+-		depends on WLAN0_RFE_TYPE_51
+-
+-		config WLAN0_FEM_KTC8570N
+-		bool "KTC8570N (8832BRHe)"
+-		depends on WLAN0_RFE_TYPE_51
+-
+-		config WLAN0_FEM_RTC66506
+-		bool "RTC66506 (8832BRHe)"
+-		depends on WLAN0_RFE_TYPE_52
+-
+-		config WLAN0_FEM_KCT8575HP
+-		bool "KCT8575HP (8832BRHe)"
+-		depends on WLAN0_RFE_TYPE_53
+-
+-		config WLAN0_FEM_KCT8539HE
+-		bool "KCT8539HE (8832BRHe)"
+-		depends on WLAN0_RFE_TYPE_53
+-
+-		config WLAN0_FEM_RTC7676D
+-		bool "RTC7676D (8832BRHe)"
+-		depends on WLAN0_RFE_TYPE_54
+-
+-		config WLAN0_FEM_RTC7676D_08U
+-		bool "RTC7676D_08U (8832BRHe)"
+-		depends on WLAN0_RFE_TYPE_54
+-
+-		config WLAN0_FEM_RTC7676D1
+-		bool "RTC7676D1 (8832BRHe)"
+-		depends on WLAN0_RFE_TYPE_54
+-endif
+-
+-if RTL8192XB
+ 		config WLAN0_FEM_SKY85340
+ 		bool "SKY85340 (8192XBe)"
+ 		depends on WLAN0_RFE_TYPE_51
+@@ -414,24 +380,24 @@
+ 
+ if RTL8852CE
+ 		config WLAN1_FEM_SKY85791
++		depends on (WLAN1_RFE_TYPE_51)
+ 		bool "SKY85791 (8852CRe)"
+-		depends on WLAN1_RFE_TYPE_51
+ 
+ 		config WLAN1_FEM_KTC8570N
++		depends on (WLAN1_RFE_TYPE_51)
+ 		bool "KTC8570N (8852CRe)"
+-		depends on WLAN1_RFE_TYPE_51
+ 
+ 		config WLAN1_FEM_RTC66506
++		depends on (WLAN1_RFE_TYPE_52)
+ 		bool "RTC66506 (8852CRe)"
+-		depends on WLAN1_RFE_TYPE_52
+ 
+ 		config WLAN1_FEM_KCT8575HP
++		depends on (WLAN1_RFE_TYPE_53)
+ 		bool "KCT8575HP (8852CRe)"
+-		depends on WLAN1_RFE_TYPE_53
+ 
+ 		config WLAN1_FEM_KCT8539HE
++		depends on (WLAN1_RFE_TYPE_53)
+ 		bool "KCT8539HE (8852CRe)"
+-		depends on WLAN1_RFE_TYPE_53
+ 
+ 		config WLAN1_FEM_KCT8531HE
+ 		bool "KCT8531HE (8852CRe)"
+@@ -446,16 +412,16 @@
+ 		depends on WLAN1_RFE_TYPE_53
+ 
+ 		config WLAN1_FEM_RTC7676D
++		depends on (WLAN1_RFE_TYPE_54)
+ 		bool "RTC7676D (8852CRe)"
+-		depends on WLAN1_RFE_TYPE_54
+ 
+ 		config WLAN1_FEM_RTC7676D_08U
++		depends on (WLAN1_RFE_TYPE_54)
+ 		bool "RTC7676D_08U (8852CRe)"
+-		depends on WLAN1_RFE_TYPE_54
+ 
+ 		config WLAN1_FEM_RTC7676D1
++		depends on (WLAN1_RFE_TYPE_54)
+ 		bool "RTC7676D1 (8852CRe)"
+-		depends on WLAN1_RFE_TYPE_54
+ 
+ 		config WLAN1_FEM_RTK66587_DPX
+ 		bool "RTK66587_DPX (8852CRe)"
+@@ -467,40 +433,6 @@
+ endif
+ 
+ if RTL8832BRH
+-		config WLAN1_FEM_SKY85791
+-		bool "SKY85791 (8832BRHe)"
+-		depends on WLAN1_RFE_TYPE_51
+-
+-		config WLAN1_FEM_KTC8570N
+-		bool "KTC8570N (8832BRHe)"
+-		depends on WLAN1_RFE_TYPE_51
+-
+-		config WLAN1_FEM_RTC66506
+-		bool "RTC66506 (8832BRHe)"
+-		depends on WLAN1_RFE_TYPE_52
+-
+-		config WLAN1_FEM_KCT8575HP
+-		bool "KCT8575HP (8832BRHe)"
+-		depends on WLAN1_RFE_TYPE_53
+-
+-		config WLAN1_FEM_KCT8539HE
+-		bool "KCT8539HE (8832BRHe)"
+-		depends on WLAN1_RFE_TYPE_53
+-
+-		config WLAN1_FEM_RTC7676D
+-		bool "RTC7676D (8832BRHe)"
+-		depends on WLAN1_RFE_TYPE_54
+-
+-		config WLAN1_FEM_RTC7676D_08U
+-		bool "RTC7676D_08U (8832BRHe)"
+-		depends on WLAN1_RFE_TYPE_54
+-
+-		config WLAN1_FEM_RTC7676D1
+-		bool "RTC7676D1 (8832BRHe)"
+-		depends on WLAN1_RFE_TYPE_54
+-endif
+-
+-if RTL8192XB
+ 		config WLAN1_FEM_SKY85340
+ 		bool "SKY85340 (8192XBe)"
+ 		depends on WLAN1_RFE_TYPE_51
+--- a/drivers/net/wireless/realtek/g6_wifi_driver/os_dep/linux/ioctl_cfg80211.c
++++ b/drivers/net/wireless/realtek/g6_wifi_driver/os_dep/linux/ioctl_cfg80211.c
+@@ -5113,7 +5113,7 @@
+ 		sinfo.filled = STATION_INFO_ASSOC_REQ_IES;
+ 		sinfo.assoc_req_ies = pmgmt_frame + WLAN_HDR_A3_LEN + ie_offset;
+ 		sinfo.assoc_req_ies_len = frame_len - WLAN_HDR_A3_LEN - ie_offset;
+-		cfg80211_new_sta(ndev, get_addr2_ptr(pmgmt_frame), &sinfo, GFP_ATOMIC);
++		cfg80211_new_sta(ndev->ieee80211_ptr, get_addr2_ptr(pmgmt_frame), &sinfo, GFP_ATOMIC);
+ 	}
+ #else /* defined(RTW_USE_CFG80211_STA_EVENT) */
+ 	channel = pmlmeext->cur_channel;
+@@ -5159,7 +5159,7 @@
+ 	RTW_INFO(FUNC_ADPT_FMT"\n", FUNC_ADPT_ARG(padapter));
+ 
+ #if defined(RTW_USE_CFG80211_STA_EVENT) || defined(COMPAT_KERNEL_RELEASE)
+-	cfg80211_del_sta(ndev, da, GFP_ATOMIC);
++	cfg80211_del_sta(ndev->ieee80211_ptr, da, GFP_ATOMIC);
+ #else /* defined(RTW_USE_CFG80211_STA_EVENT) */
+ 	channel = pmlmeext->cur_channel;
+ 	freq = rtw_ch2freq(channel);
+@@ -6620,7 +6620,7 @@
+ 
+ 			/* indicate new sta */
+ 			_rtw_memset(&sinfo, 0, sizeof(sinfo));
+-			cfg80211_new_sta(ndev, mac, &sinfo, GFP_ATOMIC);
++			cfg80211_new_sta(ndev->ieee80211_ptr, mac, &sinfo, GFP_ATOMIC);
+ 		}
+ 		goto exit;
+ 	}
+@@ -11891,26 +11891,50 @@
+  * These MUST match include/net/cfg80211.h exactly -- a mismatch is a runtime
+  * crash, not a warning. (An unnoticed get_antenna mismatch panicked the board.)
+  */
+-static int ph_add_key(struct wiphy *w, struct net_device *nd, int link_id,
++/* 7.1 additionally moved the key and station ops from net_device * to
++ * wireless_dev *. Note set_default_key did NOT change and still takes a
++ * net_device * -- do not "fix" it to match its neighbours. */
++static int ph_add_key(struct wiphy *w, struct wireless_dev *wdev, int link_id,
+ 	u8 key_index, bool pairwise, const u8 *mac_addr, struct key_params *params)
+-{ return cfg80211_rtw_add_key(w, nd, key_index, pairwise, mac_addr, params); }
++{ return cfg80211_rtw_add_key(w, wdev->netdev, key_index, pairwise, mac_addr, params); }
+ 
+-static int ph_get_key(struct wiphy *w, struct net_device *nd, int link_id,
++static int ph_get_key(struct wiphy *w, struct wireless_dev *wdev, int link_id,
+ 	u8 keyid, bool pairwise, const u8 *mac_addr, void *cookie,
+ 	void (*cb)(void *, struct key_params *))
+-{ return cfg80211_rtw_get_key(w, nd, keyid, pairwise, mac_addr, cookie, cb); }
++{ return cfg80211_rtw_get_key(w, wdev->netdev, keyid, pairwise, mac_addr, cookie, cb); }
+ 
+-static int ph_del_key(struct wiphy *w, struct net_device *nd, int link_id,
++static int ph_del_key(struct wiphy *w, struct wireless_dev *wdev, int link_id,
+ 	u8 key_index, bool pairwise, const u8 *mac_addr)
+-{ return cfg80211_rtw_del_key(w, nd, key_index, pairwise, mac_addr); }
++{ return cfg80211_rtw_del_key(w, wdev->netdev, key_index, pairwise, mac_addr); }
+ 
+ static int ph_set_default_key(struct wiphy *w, struct net_device *nd, int link_id,
+ 	u8 key_index, bool unicast, bool multicast)
+ { return cfg80211_rtw_set_default_key(w, nd, key_index, unicast, multicast); }
+ 
+-static int ph_set_default_mgmt_key(struct wiphy *w, struct net_device *nd,
++static int ph_set_default_mgmt_key(struct wiphy *w, struct wireless_dev *wdev,
+ 	int link_id, u8 key_index)
+-{ return cfg80211_rtw_set_default_mgmt_key(w, nd, key_index); }
++{ return cfg80211_rtw_set_default_mgmt_key(w, wdev->netdev, key_index); }
++
++/* station ops: net_device * -> wireless_dev * in 7.1 */
++static int ph_get_station(struct wiphy *w, struct wireless_dev *wdev,
++	const u8 *mac, struct station_info *sinfo)
++{ return cfg80211_rtw_get_station(w, wdev->netdev, mac, sinfo); }
++
++static int ph_add_station(struct wiphy *w, struct wireless_dev *wdev,
++	const u8 *mac, struct station_parameters *params)
++{ return cfg80211_rtw_add_station(w, wdev->netdev, mac, params); }
++
++static int ph_del_station(struct wiphy *w, struct wireless_dev *wdev,
++	struct station_del_parameters *params)
++{ return cfg80211_rtw_del_station(w, wdev->netdev, params); }
++
++static int ph_change_station(struct wiphy *w, struct wireless_dev *wdev,
++	const u8 *mac, struct station_parameters *params)
++{ return cfg80211_rtw_change_station(w, wdev->netdev, mac, params); }
++
++static int ph_dump_station(struct wiphy *w, struct wireless_dev *wdev,
++	int idx, u8 *mac, struct station_info *sinfo)
++{ return cfg80211_rtw_dump_station(w, wdev->netdev, idx, mac, sinfo); }
+ 
+ static int ph_set_wiphy_params(struct wiphy *w, int radio_idx, u32 changed)
+ { return cfg80211_rtw_set_wiphy_params(w, changed); }
+@@ -11957,7 +11981,7 @@
+ #if defined(CONFIG_GTK_OL) && (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 1, 0))
+ 	.set_rekey_data = cfg80211_rtw_set_rekey_data,
+ #endif /*CONFIG_GTK_OL*/
+-	.get_station = cfg80211_rtw_get_station,
++	.get_station = ph_get_station,
+ 	.scan = cfg80211_rtw_scan,
+ 	.set_wiphy_params = ph_set_wiphy_params,
+ 	.connect = cfg80211_rtw_connect,
+@@ -11989,10 +12013,10 @@
+ 	.set_mac_acl = cfg80211_rtw_set_mac_acl,
+ #endif
+ 
+-	.add_station = cfg80211_rtw_add_station,
+-	.del_station = cfg80211_rtw_del_station,
+-	.change_station = cfg80211_rtw_change_station,
+-	.dump_station = cfg80211_rtw_dump_station,
++	.add_station = ph_add_station,
++	.del_station = ph_del_station,
++	.change_station = ph_change_station,
++	.dump_station = ph_dump_station,
+ 	.change_bss = cfg80211_rtw_change_bss,
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 29))
+ 	.set_txq_params = cfg80211_rtw_set_txq_params,
+--- a/drivers/net/wireless/realtek/g6_wifi_driver/os_dep/linux/rtw_cfg.c
++++ b/drivers/net/wireless/realtek/g6_wifi_driver/os_dep/linux/rtw_cfg.c
+@@ -302,7 +302,24 @@
+ #endif /* CONFIG_80211N_HT */
+ 
+ #ifdef CONFIG_80211AC_VHT
+-int rtw_vht_enable = 1; /* 0:disable, 1:enable, 2:force auto enable */
++/* Must be 2 ("auto"), not 1, for hostapd-driven AP mode. At 1, rtw_check_beacon_data()
++ * takes neither branch of its VHT arm: the first is gated on MLME_IS_MESH() ("allow only
++ * mesh temporarily before VHT IE checking is ready") and the second on REGSTY_IS_11AC_AUTO,
++ * so vht_option stays _FALSE and rtw_vht_ies_detach() then STRIPS VHT Capability/Operation
++ * out of the beacon -- and update_sta_vht_info_apmode() clears the per-STA vht_option, so
++ * the assoc response loses VHT too.
++ *
++ * hostapd answers probe requests itself (cfg80211_rtw_mgmt_tx), so probe responses keep
++ * their VHT IEs. The client therefore learns "VHT AP" from the probe response, associates,
++ * gets an assoc response and beacons with HT only, and mac80211 kills the link:
++ *   AP bug: VHT capa missing from AssocResp
++ *   AP <bssid> appears to change mode (expected VHT, found HT) in beacon, disconnect
++ *
++ * At 2 the driver detaches hostapd's VHT IEs and attaches its own, built from actual PHY
++ * capability -- which is also more correct than what hostapd emits here (its VHT cap info
++ * was all zeroes on the wire).
++ */
++int rtw_vht_enable = 2; /* 0:disable, 1:enable, 2:force auto enable */
+ module_param(rtw_vht_enable, int, 0644);
+ 
+ int rtw_ampdu_factor = 7;
+--- a/drivers/net/wireless/realtek/rtl8192cd/8192cd_br_ext.c
++++ b/drivers/net/wireless/realtek/rtl8192cd/8192cd_br_ext.c
+@@ -336,7 +336,7 @@
+ 	unsigned char *cur_ptr, *start_ptr;
+ 	unsigned short tagLen, tagType;
+ 
+-	start_ptr = cur_ptr = (unsigned char *)ph->tag;
++	start_ptr = cur_ptr = pppoe_hdr_tags(ph);
+ 	while((cur_ptr - start_ptr) < ntohs(ph->length)) {
+ 		// prevent un-alignment access
+ 		tagType = (unsigned short)((cur_ptr[0] << 8) + cur_ptr[1]);
+@@ -362,9 +362,9 @@
+ 
+ 	skb_put(skb, data_len);
+ 	// have a room for new tag
+-	memmove(((unsigned char *)ph->tag + data_len), (unsigned char *)ph->tag, ntohs(ph->length));
++	memmove((pppoe_hdr_tags(ph) + data_len), pppoe_hdr_tags(ph), ntohs(ph->length));
+ 	ph->length = htons(ntohs(ph->length) + data_len);
+-	memcpy((unsigned char *)ph->tag, tag, data_len);
++	memcpy(pppoe_hdr_tags(ph), tag, data_len);
+ 	return data_len;
+ }
+ 
+@@ -1633,8 +1633,8 @@
+ 									return -1;
+ 								}
+ 
+-								memcpy(tag->tag_data+MAGIC_CODE_LEN+RTL_RELAY_TAG_LEN,
+-										pOldTag->tag_data, old_tag_len);
++								memcpy(pppoe_tag_data(tag)+MAGIC_CODE_LEN+RTL_RELAY_TAG_LEN,
++										pppoe_tag_data(pOldTag), old_tag_len);
+ 
+ 								if (skb_pull_and_merge(skb, (unsigned char *)pOldTag, TAG_HDR_LEN+old_tag_len) < 0) {
+ 									DEBUG_ERR("call skb_pull_and_merge() failed in PADI/R packet!\n");
+@@ -1650,12 +1650,12 @@
+ #if defined(__ECOS) || defined(__OSK__)
+ 							num = htons(MAGIC_CODE);
+ 							tmp_magic = (char *)&num;
+-							memcpy(tag->tag_data, tmp_magic, 2);
++							memcpy(pppoe_tag_data(tag), tmp_magic, 2);
+ #else
+-							pMagic = (unsigned short *)tag->tag_data;
++							pMagic = (unsigned short *)pppoe_tag_data(tag);
+ 							*pMagic = htons(MAGIC_CODE);
+ #endif
+-							memcpy(tag->tag_data+MAGIC_CODE_LEN, skb->data+ETH_ALEN, ETH_ALEN);
++							memcpy(pppoe_tag_data(tag)+MAGIC_CODE_LEN, skb->data+ETH_ALEN, ETH_ALEN);
+ 
+ 							//Add relay tag
+ 							if(__nat25_add_pppoe_tag(skb, tag) < 0)
+@@ -1721,10 +1721,10 @@
+ 						}
+ 
+ #if defined(__ECOS) || defined(__OSK__)
+-						memcpy(&num, tag->tag_data, 2);
++						memcpy(&num, pppoe_tag_data(tag), 2);
+ 						pMagic = &num;
+ #else
+-						pMagic = (unsigned short *)tag->tag_data;
++						pMagic = (unsigned short *)pppoe_tag_data(tag);
+ #endif
+ 						if (*pMagic != htons(MAGIC_CODE)) {
+ 							DEBUG_ERR("Can't find MAGIC_CODE in %s packet!\n",
+@@ -1732,7 +1732,7 @@
+ 							return -1;
+ 						}
+ 
+-						memcpy(skb->data, tag->tag_data+MAGIC_CODE_LEN, ETH_ALEN);
++						memcpy(skb->data, pppoe_tag_data(tag)+MAGIC_CODE_LEN, ETH_ALEN);
+ 
+ 						if (tagLen > MAGIC_CODE_LEN+RTL_RELAY_TAG_LEN)
+ 							offset = TAG_HDR_LEN;
+--- a/drivers/net/wireless/realtek/rtl8192cd/8192cd_cfg80211.c
++++ b/drivers/net/wireless/realtek/rtl8192cd/8192cd_cfg80211.c
+@@ -62,7 +62,13 @@
+ #include "./8192cd_p2p.h"
+ #include "./8192cd_net80211.h"  
+ 
+-//#define DEBUG_NL80211
++/* Phoebus: temporarily enabled. wlan1 reports AP-ENABLED to hostapd but the
++ * radio never keys up -- /proc/wlan1/stats shows tx_mgnt_pkts:0 and
++ * rx_mgnt_pkts:0 after 7+ minutes, i.e. not one beacon sent and not one frame
++ * heard. The 5GHz driver narrates its whole AP bring-up; this one is silent,
++ * so turn its own cfg80211 tracing on rather than bolting printks onto guesses.
++ * Revert once 2.4GHz beacons. */
++#define DEBUG_NL80211
+ #ifdef DEBUG_NL80211
+ //#define NLENTER	{}
+ //#define NLEXIT {}
+@@ -936,7 +942,7 @@
+ 				}
+ 				SMP_UNLOCK_CFG80211(flags);
+ 				NDEBUG2("cfg80211_new_sta assoc req,[idx=%d] Rx assoc_req_ies_len = %d\n", priv->dev->ifindex, sinfo.assoc_req_ies_len);			
+-				cfg80211_new_sta(priv->dev, mac, &sinfo, GFP_ATOMIC);
++				cfg80211_new_sta(priv->dev->ieee80211_ptr, mac, &sinfo, GFP_ATOMIC);
+ 				NDEBUG3("cfg80211_new_sta ,STA[%02x:%02x:%02x:%02x%:02x:%02x]\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5] );
+ 				netif_wake_queue(priv->dev); //wrt-vap
+ 				SMP_LOCK_CFG80211(flags);
+@@ -1010,7 +1016,7 @@
+ 			break;
+ 		case CFG80211_DEL_STA:
+ 			NDEBUG("cfg80211_event [CFG80211_DEL_STA][%d]\n", event);
+-			cfg80211_del_sta(priv->dev, mac, GFP_ATOMIC);
++			cfg80211_del_sta(priv->dev->ieee80211_ptr, mac, GFP_ATOMIC);
+ 			break;
+ 		case CFG80211_RADAR_CAC_FINISHED:
+ 			if (priv->pshare->dfs_chan_def && priv->wdev.links[0].cac_started) {
+@@ -7900,26 +7906,47 @@
+  * These MUST match include/net/cfg80211.h exactly -- a mismatch is a runtime
+  * crash, not a warning (that is exactly how the g6 driver panicked at boot).
+  */
+-static int rtk_shim_add_key(struct wiphy *w, struct net_device *nd, int link_id,
++static int rtk_shim_add_key(struct wiphy *w, struct wireless_dev *wdev, int link_id,
+ 	u8 key_index, bool pairwise, const u8 *mac_addr, struct key_params *params)
+-{ return realtek_cfg80211_add_key(w, nd, key_index, pairwise, mac_addr, params); }
++{ return realtek_cfg80211_add_key(w, wdev->netdev, key_index, pairwise, mac_addr, params); }
+ 
+-static int rtk_shim_get_key(struct wiphy *w, struct net_device *nd, int link_id,
++static int rtk_shim_get_key(struct wiphy *w, struct wireless_dev *wdev, int link_id,
+ 	u8 key_index, bool pairwise, const u8 *mac_addr, void *cookie,
+ 	void (*cb)(void *, struct key_params *))
+-{ return realtek_cfg80211_get_key(w, nd, key_index, pairwise, mac_addr, cookie, cb); }
++{ return realtek_cfg80211_get_key(w, wdev->netdev, key_index, pairwise, mac_addr, cookie, cb); }
+ 
+-static int rtk_shim_del_key(struct wiphy *w, struct net_device *nd, int link_id,
++static int rtk_shim_del_key(struct wiphy *w, struct wireless_dev *wdev, int link_id,
+ 	u8 key_index, bool pairwise, const u8 *mac_addr)
+-{ return realtek_cfg80211_del_key(w, nd, key_index, pairwise, mac_addr); }
++{ return realtek_cfg80211_del_key(w, wdev->netdev, key_index, pairwise, mac_addr); }
+ 
+ static int rtk_shim_set_default_key(struct wiphy *w, struct net_device *nd,
+ 	int link_id, u8 key_index, bool unicast, bool multicast)
+ { return realtek_cfg80211_set_default_key(w, nd, key_index, unicast, multicast); }
+ 
+-static int rtk_shim_set_default_mgmt_key(struct wiphy *w, struct net_device *nd,
++static int rtk_shim_set_default_mgmt_key(struct wiphy *w, struct wireless_dev *wdev,
+ 	int link_id, u8 key_index)
+-{ return realtek_cfg80211_set_default_mgmt_key(w, nd, key_index); }
++{ return realtek_cfg80211_set_default_mgmt_key(w, wdev->netdev, key_index); }
++
++/* station ops: net_device * -> wireless_dev * in 7.1 */
++static int rtk_shim_get_station(struct wiphy *w, struct wireless_dev *wdev,
++	const u8 *mac, struct station_info *sinfo)
++{ return realtek_cfg80211_get_station(w, wdev->netdev, mac, sinfo); }
++
++static int rtk_shim_add_station(struct wiphy *w, struct wireless_dev *wdev,
++	const u8 *mac, struct station_parameters *params)
++{ return realtek_cfg80211_add_station(w, wdev->netdev, mac, params); }
++
++static int rtk_shim_del_station(struct wiphy *w, struct wireless_dev *wdev,
++	struct station_del_parameters *params)
++{ return realtek_cfg80211_del_station(w, wdev->netdev, params); }
++
++static int rtk_shim_change_station(struct wiphy *w, struct wireless_dev *wdev,
++	const u8 *mac, struct station_parameters *params)
++{ return realtek_cfg80211_change_station(w, wdev->netdev, mac, params); }
++
++static int rtk_shim_dump_station(struct wiphy *w, struct wireless_dev *wdev,
++	int idx, u8 *mac, struct station_info *sinfo)
++{ return realtek_cfg80211_dump_station(w, wdev->netdev, idx, mac, sinfo); }
+ 
+ static int rtk_shim_set_wiphy_params(struct wiphy *w, int radio_idx, u32 changed)
+ { return realtek_cfg80211_set_wiphy_params(w, changed); }
+@@ -7976,11 +8003,11 @@
+ 	//.add_beacon = realtek_cfg80211_add_beacon,
+ 	//.set_beacon = realtek_cfg80211_set_beacon,
+ 	//.del_beacon = realtek_cfg80211_del_beacon,
+-	.add_station = realtek_cfg80211_add_station,
+-	.del_station = realtek_cfg80211_del_station,
+-	.change_station = realtek_cfg80211_change_station,
+-	.get_station = realtek_cfg80211_get_station,
+-	.dump_station = realtek_cfg80211_dump_station,
++	.add_station = rtk_shim_add_station,
++	.del_station = rtk_shim_del_station,
++	.change_station = rtk_shim_change_station,
++	.get_station = rtk_shim_get_station,
++	.dump_station = rtk_shim_dump_station,
+ #if 0//def CONFIG_MAC80211_MESH
+ 		.add_mpath = realtek_cfg80211_add_mpath,
+ 		.del_mpath = realtek_cfg80211_del_mpath,
+--- a/drivers/net/wireless/realtek/rtl8192cd/8192cd_hw.c
++++ b/drivers/net/wireless/realtek/rtl8192cd/8192cd_hw.c
+@@ -32475,13 +32475,18 @@
+ 		return;
+ 
+ 	EfuseInit(priv);
++	/* This function returns void -- `return -ENOMEM` here does not compile.
++	 * Latent because the whole efuse path is behind EN_EFUSE, which is only
++	 * defined when SLOT_{0,1}_ENABLE_EFUSE or SOC_ENABLE_EFUSE is set; it had
++	 * evidently never been built with RTK_NL80211. Bail out quietly instead:
++	 * the caller only wants a MAC and already tolerates not getting one. */
+ 	if (EfuseMapAlloc(priv) == FAIL) {
+ 		printk(KERN_ERR "%s: can't allocate efuse map\n", __func__);
+-		return -ENOMEM;
++		return;
+ 	}
+ 	if (EfuseCmdInit(priv) == FAIL) {
+ 		printk(KERN_ERR "%s: can't allocate efuse cmd\n", __func__);
+-		return -ENOMEM;
++		return;
+ 	}
+ 	EFUSE_ShadowMapUpdate(priv); 
+ #ifdef CONFIG_RTL_92C_SUPPORT
+--- a/drivers/net/wireless/realtek/rtl8192cd/8192cd_osdep.c
++++ b/drivers/net/wireless/realtek/rtl8192cd/8192cd_osdep.c
+@@ -9620,6 +9620,13 @@
+ 	}
+ #endif
+ 
++	/* Phoebus debug: wlan1 reports AP-ENABLED but the radio never keys up
++	 * (tx_mgnt_pkts:0, rx_mgnt_pkts:0). The WDS branch below returns success
++	 * without initialising any hardware when base_addr is 0, and base_addr is
++	 * a legacy field modern kernels leave at 0 unless a driver sets it.
++	 * Print what we actually get before deciding. Remove once 2.4GHz beacons. */
++	printk(KERN_ERR "PHOEBUS-OPEN: %s base_addr=%#lx\n", dev->name, dev->base_addr);
++
+ #ifdef WDS
+ 	if (dev->base_addr == 0)
+ 	{
+@@ -9628,6 +9635,8 @@
+ 		cached_wds_dev = NULL;
+ #endif
+ 
++		printk(KERN_ERR "PHOEBUS-OPEN: %s -> WDS early return, NO hw init\n",
++		       dev->name);
+ 		netif_start_queue(dev);
+ 		return 0;
+ 	}
+@@ -11644,6 +11653,7 @@
+ 	struct rtl8192cd_priv *priv = GET_DEV_PRIV(dev);
+ 	unsigned long reg;
+ 	unsigned char *p, zero_mac[MACADDRLEN]={0};
++	unsigned char phoebus_mac[MACADDRLEN];	/* fallback when the efuse is blank */
+ #ifdef WDS
+ 	int i;
+ #endif
+@@ -11685,9 +11695,30 @@
+ 			}
+ 			priv->dev->flags &= ~IFF_UP;
+ 			rtl8192cd_close(priv->dev);
++			return 0;
+ 		}
+ 
+-		return 0;
++		/* Not open yet: this is init handing us a blank efuse, not userspace
++		 * asking for a bad MAC at runtime. Returning here left GET_MY_HWADDR
++		 * and wiphy->perm_addr zero -- and an AP's BSSID *is* its MAC, so the
++		 * radio never keyed up: /proc/wlan1/stats showed tx_mgnt_pkts:0 and
++		 * rx_mgnt_pkts:0 after 7+ minutes while hostapd happily reported
++		 * AP-ENABLED.
++		 *
++		 * Realtek parts frequently ship with no MAC burnt in the eFuse; the
++		 * expected remedy is for the driver to generate one. g6_wifi_driver
++		 * already does exactly this ("invalid mac addr ... assign random MAC")
++		 * which is why 5GHz works, and upstream rtw89 carries the same fix
++		 * ("wifi: rtw89: 8922a: set random mac if efuse contains zeroes").
++		 *
++		 * NOTE: this is random per boot, so the BSSID changes across reboots
++		 * and clients must re-learn the AP. Deriving it from the board's
++		 * cmdline ethaddr would be stable; do that once this is confirmed.
++		 */
++		eth_random_addr(phoebus_mac);
++		panic_printk("%s: efuse MAC is blank, assigning random %pM\n",
++			     priv->dev->name, phoebus_mac);
++		p = phoebus_mac;
+ 	}
+ 
+ 	SAVE_INT_AND_CLI(flags);
+@@ -12776,6 +12807,20 @@
+ }
+ 
+ 
++/* Phoebus: "rfe2g=N" on the kernel cmdline overrides the compiled-in 2.4GHz RF
++ * front-end type (see the use site in set_mib_default). __setup() rather than
++ * module_param() because this driver is built in, so a module_param would need a
++ * KBUILD_MODNAME prefix that is easy to get wrong from U-Boot. -1 = no override. */
++static int phoebus_rfe2g_override = -1;
++
++static int __init phoebus_rfe2g_setup(char *str)
++{
++	if (!str || kstrtoint(str, 0, &phoebus_rfe2g_override))
++		phoebus_rfe2g_override = -1;
++	return 1;
++}
++__setup("rfe2g=", phoebus_rfe2g_setup);
++
+ #ifdef CONFIG_RTL_KERNEL_MIPS16_WLAN
+ __NOMIPS16
+ #endif
+@@ -13358,6 +13403,28 @@
+ 	}
+ #endif
+ 
++	/* Phoebus: rfe_type selects the RF front-end configuration -- which AGC
++	 * table gets loaded, and how any external LNA/PA is driven. It is fixed at
++	 * build time by CONFIG_SLOT_n_RFE_TYPE_m (we have 3), and the driver ships
++	 * eight different 8192F AGC tables (bare, extlna, extpa, extlna_type1..3,
++	 * sky85201_2L/4L). If it does not match the board, TX can still beacon while
++	 * RX goes deaf -- which is exactly what wlan1 does: beacon_ok climbs, but
++	 * rx_packets, rx_mgmt_pkts AND rx_crc_errors are all zero, and a live 2.4GHz
++	 * channel is never silent to a working receiver.
++	 *
++	 * Finding the right value meant a rebuild and a 20-minute serial flash per
++	 * candidate. Make it a cmdline token instead so the sweep is just reboots:
++	 *   rfe2g=6   (-1 or absent = leave the compiled-in value alone)
++	 * Always report the value in use so the log says which one was tested. */
++	if (phoebus_rfe2g_override >= 0) {
++		panic_printk("PHOEBUS-RFE: rfe_type %u -> %d (rfe2g= cmdline override)\n",
++			     priv->pmib->dot11RFEntry.rfe_type, phoebus_rfe2g_override);
++		priv->pmib->dot11RFEntry.rfe_type = phoebus_rfe2g_override;
++	} else {
++		panic_printk("PHOEBUS-RFE: rfe_type=%u (compiled-in; override with rfe2g=N)\n",
++			     priv->pmib->dot11RFEntry.rfe_type);
++	}
++
+ #if 0// defined(CONFIG_RTL8672) && defined(CONFIG_WLAN_HAL_8192EE)
+ 	if (GET_CHIP_VER(priv)==VERSION_8192E) {
+ 	    priv->pmib->dot11nConfigEntry.dot11nAMPDURevSz = 28;
+--- a/drivers/net/wireless/realtek/rtl8192cd/8192cd_sme.c
++++ b/drivers/net/wireless/realtek/rtl8192cd/8192cd_sme.c
+@@ -28401,7 +28401,7 @@
+ 			pstat->sa_query_end = jiffies + RTL_MILISECONDS_TO_JIFFIES(SA_QUERY_MAX_TO);
+ 		}
+ #ifdef RTK_NL80211
+-		cfg80211_new_sta(priv->dev, GetAddr2Ptr(pframe), &sinfo, GFP_ATOMIC);
++		cfg80211_new_sta(priv->dev->ieee80211_ptr, GetAddr2Ptr(pframe), &sinfo, GFP_ATOMIC);
+ 		netif_wake_queue(priv->dev); //wrt-vap
+ #endif
+ 		if (frame_type == WIFI_ASSOCREQ)
+@@ -30275,7 +30275,7 @@
+ #ifdef RTK_NL80211
+ 	/*cfg p2p cfg p2p*/
+ 	//NDEBUG("pstat=0x%x: %02x %02x %02x\n", pstat, pstat->wpa_ie[0], pstat->wpa_ie[1], pstat->wpa_ie[2]);
+-	cfg80211_new_sta(priv->dev, GetAddr2Ptr(pframe), &sinfo, GFP_ATOMIC);
++	cfg80211_new_sta(priv->dev->ieee80211_ptr, GetAddr2Ptr(pframe), &sinfo, GFP_ATOMIC);
+ 	 netif_wake_queue(priv->dev); //wrt-vap 
+ 	//event_indicate_cfg80211(priv, GetAddr2Ptr(pframe), CFG80211_NEW_STA, pstat);
+ #else //RTK_NL80211
+--- a/drivers/net/wireless/realtek/rtl8192cd/Kconfig
++++ b/drivers/net/wireless/realtek/rtl8192cd/Kconfig
+@@ -54,15 +54,11 @@
+ 	select SOC_EXT_LNA
+ 
+ 	config SOC_RFE_TYPE_2
+-	depends on WLAN_HAL_8197F
++	depends on (WLAN_HAL_8197F) || (WLAN_HAL_8198F)
+ 	bool "Type 2: internal PA/LNA 2-LAYER"
+-	select FREE_WBB_PIN
+-	
+-	config SOC_RFE_TYPE_2
+-	depends on WLAN_HAL_8198F
+-	bool "Type 2: ipd"
+-	select FREE_WBB_PIN
+ 	
++	select FREE_WBB_PIN if (WLAN_HAL_8197F)
++	select FREE_WBB_PIN if (WLAN_HAL_8198F)
+ 	config SOC_RFE_TYPE_3
+ 	depends on WLAN_HAL_8197F
+ 	bool "Type 3: internal PA/LNA with TRSW"
+@@ -338,79 +334,47 @@
+ 	default SLOT_0_RFE_TYPE_2
+ 
+ 	config SLOT_0_RFE_TYPE_0
+-	depends on (SLOT_0_8822BE || SLOT_0_8822CE || SLOT_0_8814CR || SLOT_0_8194CR)
++	depends on (SLOT_0_8822BE || SLOT_0_8822CE || SLOT_0_8814CR || SLOT_0_8194CR) || (SLOT_0_8194BE) || (SLOT_0_8812FE)
+ 	bool "Type 0: internal PA/LNA"
+ 
+-	config SLOT_0_RFE_TYPE_0
+-	depends on (SLOT_0_8194BE)
+-	bool "Type 0: internal PA/LNA 4-LAYER"
+-
+-	config SLOT_0_RFE_TYPE_0
+-	depends on (SLOT_0_8812FE)
+-	bool "Type 0: internal PA/LNA 2-LAYER/6-LAYER"
+-
+ 	config SLOT_0_RFE_TYPE_1
+-	depends on (SLOT_0_8822BE || SLOT_0_8814BE || SLOT_0_8822CE || SLOT_0_8194BE || SLOT_0_8814CR || SLOT_0_8194CR)
++	depends on (SLOT_0_8822BE || SLOT_0_8814BE || SLOT_0_8822CE || SLOT_0_8194BE || SLOT_0_8814CR || SLOT_0_8194CR) || (SLOT_0_8812FE)
+ 	bool "Type 1: external PA/LNA HIGH 4-LAYER (SKY85728/SKY85735/SKY85746/LX5586H)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+ 
+-	config SLOT_0_RFE_TYPE_1
+-	depends on (SLOT_0_8812FE)
+-	bool "Type 1: external PA/LNA HIGH(SKY85764)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+-	
++	select SLOT_0_EXT_PA if ((SLOT_0_8822BE || SLOT_0_8814BE || SLOT_0_8822CE || SLOT_0_8194BE || SLOT_0_8814CR || SLOT_0_8194CR))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8822BE || SLOT_0_8814BE || SLOT_0_8822CE || SLOT_0_8194BE || SLOT_0_8814CR || SLOT_0_8194CR))
++	select SLOT_0_EXT_PA if ((SLOT_0_8812FE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8812FE))
+ 	config SLOT_0_RFE_TYPE_2
+-	depends on (SLOT_0_8814BE || SLOT_0_8194BE || SLOT_0_8814CR || SLOT_0_8194CR)
++	depends on (SLOT_0_8814BE || SLOT_0_8194BE || SLOT_0_8814CR || SLOT_0_8194CR) || (SLOT_0_8814AE || SLOT_0_8194AE)
+ 	bool "Type 2: internal PA/LNA 4-LAYER/6-LAYER"	
+ 	
+-	config SLOT_0_RFE_TYPE_2
+-	depends on (SLOT_0_8814AE || SLOT_0_8194AE)
+-	bool "Type 2: external PA/LNA (2G SKY85300, 5G LX5586A)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+-
++	select SLOT_0_EXT_PA if ((SLOT_0_8814AE || SLOT_0_8194AE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8814AE || SLOT_0_8194AE))
+ 	config SLOT_0_RFE_TYPE_3
+-	depends on (SLOT_0_8814AE || SLOT_0_8194AE)
++	depends on (SLOT_0_8814AE || SLOT_0_8194AE) || (SLOT_0_8192FE || SLOT_0_8192EE_8192FE) || (SLOT_0_8812FE)
+ 	bool "Type 3: external PA/LNA 4-LAYER (2G SE2623L/SKY85201-11, 5G SKY85405/SKY85605-11/SKY85610-11)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+ 	
+-	config SLOT_0_RFE_TYPE_3
+-	depends on (SLOT_0_8192FE || SLOT_0_8192EE_8192FE)
+-	bool "Type 3: internal PA/LNA 2-LAYER/6-LAYER"
+-
+-	config SLOT_0_RFE_TYPE_3
+-	depends on (SLOT_0_8812FE)
+-	bool "Type 3: external PA/LNA (SKY85743)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+-
++	select SLOT_0_EXT_PA if ((SLOT_0_8814AE || SLOT_0_8194AE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8814AE || SLOT_0_8194AE))
++	select SLOT_0_EXT_PA if ((SLOT_0_8812FE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8812FE))
+ 	config SLOT_0_RFE_TYPE_4
+-	depends on (SLOT_0_8814AE || SLOT_0_8194AE)
++	depends on (SLOT_0_8814AE || SLOT_0_8194AE) || (SLOT_0_8814BE || SLOT_0_8194BE)
+ 	bool "Type 4: external PA/LNA 4-LAYER (2G SKY85303/SKY85300-21, 5G SKY85717/SKY85717-21)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+-
+-	config SLOT_0_RFE_TYPE_4
+-	depends on (SLOT_0_8814BE || SLOT_0_8194BE)
+-	bool "Type 4: external PA/LNA (SKY85735)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+ 
++	select SLOT_0_EXT_PA if ((SLOT_0_8814AE || SLOT_0_8194AE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8814AE || SLOT_0_8194AE))
++	select SLOT_0_EXT_PA if ((SLOT_0_8814BE || SLOT_0_8194BE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8814BE || SLOT_0_8194BE))
+ 	config SLOT_0_RFE_TYPE_5
+-	depends on (SLOT_0_8814AE || SLOT_0_8194AE)
++	depends on (SLOT_0_8814AE || SLOT_0_8194AE) || (SLOT_0_8814BE || SLOT_0_8194BE)
+ 	bool "Type 5: external PA/LNA (2G SE2623L/SKY85201-11, 5G SKY85405/SKY85605-11)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+-
+-	config SLOT_0_RFE_TYPE_5
+-	depends on (SLOT_0_8814BE || SLOT_0_8194BE)
+-	bool "Type 5: external PA/LNA (QPF4519)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+ 
++	select SLOT_0_EXT_PA if ((SLOT_0_8814AE || SLOT_0_8194AE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8814AE || SLOT_0_8194AE))
++	select SLOT_0_EXT_PA if ((SLOT_0_8814BE || SLOT_0_8194BE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8814BE || SLOT_0_8194BE))
+ 	config SLOT_0_RFE_TYPE_6
+ 	depends on (SLOT_0_8822BE || SLOT_0_8822CE)
+ 	bool "Type 6: external PA/LNA NORMAL 2-LAYER(SKY85742/SKY85753/RTC5639)"
+@@ -418,56 +382,36 @@
+ 	select SLOT_0_EXT_LNA
+ 
+ 	config SLOT_0_RFE_TYPE_7
+-	depends on (SLOT_0_8814AE || SLOT_0_8194AE)
++	depends on (SLOT_0_8814AE || SLOT_0_8194AE) || (SLOT_0_8822BE || SLOT_0_8822CE)
+ 	bool "Type 7: internal PA/LNA 6-LAYER"	
+ 
+-	config SLOT_0_RFE_TYPE_7
+-	depends on (SLOT_0_8822BE || SLOT_0_8822CE)
+-	bool "Type 7: external PA/LNA NORMAL 4-LAYER(SKY85742/SKY85734/SKY85712/SKY85735/RTC5639)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+-
++	select SLOT_0_EXT_PA if ((SLOT_0_8822BE || SLOT_0_8822CE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8822BE || SLOT_0_8822CE))
+     config SLOT_0_RFE_TYPE_8
+-    depends on (SLOT_0_8822BE  || SLOT_0_8821CE || SLOT_0_8822CE)
++    depends on (SLOT_0_8822BE  || SLOT_0_8821CE || SLOT_0_8822CE) || (SLOT_0_8814AE || SLOT_0_8194AE)
+ 	bool "Type 8: internal PA/LNA TFBGA"
+ 
+-	config SLOT_0_RFE_TYPE_8
+-	depends on (SLOT_0_8814AE || SLOT_0_8194AE)
+-	bool "Type 8: external PA/LNA 2-LAYER (2G SKY85300, 5G LX5586A/SKY85735)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+-
++	select SLOT_0_EXT_PA if ((SLOT_0_8814AE || SLOT_0_8194AE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8814AE || SLOT_0_8194AE))
+ 	config SLOT_0_RFE_TYPE_9
+-	depends on (SLOT_0_8814AE || SLOT_0_8194AE)
++	depends on (SLOT_0_8814AE || SLOT_0_8194AE) || (SLOT_0_8822BE || SLOT_0_8822CE)
+ 	bool "Type 9: internal 2L"	
+ 	
+-	config SLOT_0_RFE_TYPE_9
+-	depends on (SLOT_0_8822BE || SLOT_0_8822CE)
+-	bool "Type 9: external LNA NORMAL 4-LAYER(SKY85608)"
+-	select SLOT_0_EXT_LNA
+-
++	select SLOT_0_EXT_LNA if ((SLOT_0_8822BE || SLOT_0_8822CE))
+ 	config SLOT_0_RFE_TYPE_10
+-	depends on (SLOT_0_8822BE || SLOT_0_8822CE)
++	depends on (SLOT_0_8822BE || SLOT_0_8822CE) || (SLOT_0_8814AE || SLOT_0_8194AE)
+ 	bool "Type 10: internal PA/LNA with TRSW(GW2159/SKY13351)"
+ 
+-	config SLOT_0_RFE_TYPE_10
+-	depends on (SLOT_0_8814AE || SLOT_0_8194AE)
+-	bool "Type 10: external PA/LNA (2G SKY85303 ,5G SKY85746-11)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+-	
++	select SLOT_0_EXT_PA if ((SLOT_0_8814AE || SLOT_0_8194AE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8814AE || SLOT_0_8194AE))
+ 	config SLOT_0_RFE_TYPE_11
+-	depends on (SLOT_0_8822BE || SLOT_0_8822CE)
++	depends on (SLOT_0_8822BE || SLOT_0_8822CE) || (SLOT_0_8814AE || SLOT_0_8194AE)
+ 	bool "Type 11: external PA/LNA TFBGA(SKY85742)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+-
+-	config SLOT_0_RFE_TYPE_11
+-	depends on (SLOT_0_8814AE || SLOT_0_8194AE)
+-	bool "Type 11: external PA/LNA 6-LAYER (2G RTC7625HE/RTC5625HE-1/RTC7663, 5G RTC5638H/RTC5638HE/RTC7657)"
+-	select SLOT_0_EXT_PA
+-	select SLOT_0_EXT_LNA
+ 
++	select SLOT_0_EXT_PA if ((SLOT_0_8822BE || SLOT_0_8822CE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8822BE || SLOT_0_8822CE))
++	select SLOT_0_EXT_PA if ((SLOT_0_8814AE || SLOT_0_8194AE))
++	select SLOT_0_EXT_LNA if ((SLOT_0_8814AE || SLOT_0_8194AE))
+ 	config SLOT_0_RFE_TYPE_12
+ 	depends on (SLOT_0_8192FE || SLOT_0_8192EE_8192FE)
+ 	bool "Type 12: external PA/LNA (RWL2305-21)"
+@@ -634,85 +578,47 @@
+ 	default SLOT_1_RFE_TYPE_2
+ 
+ 	config SLOT_1_RFE_TYPE_0
+-	depends on (SLOT_1_8822BE || SLOT_1_8822CE)
++	depends on (SLOT_1_8822BE || SLOT_1_8822CE) || (SLOT_1_8194BE || SLOT_1_8814CR || SLOT_1_8194CR) || (SLOT_1_8812FE)
+ 	bool "Type 0: internal PA/LNA"
+ 
+-	config SLOT_1_RFE_TYPE_0
+-	depends on (SLOT_1_8194BE || SLOT_1_8814CR || SLOT_1_8194CR)
+-	bool "Type 0: internal PA/LNA 4-LAYER"
+-
+-	config SLOT_1_RFE_TYPE_0
+-	depends on (SLOT_1_8812FE)
+-	bool "Type 0: internal PA/LNA 2-LAYER/6-LAYER"
+-
+ 	config SLOT_1_RFE_TYPE_1
+-	depends on (SLOT_1_8822BE || SLOT_1_8814BE || SLOT_1_8822CE || SLOT_1_8194BE)
++	depends on (SLOT_1_8822BE || SLOT_1_8814BE || SLOT_1_8822CE || SLOT_1_8194BE) || (SLOT_1_8812FE)
+ 	bool "Type 1: external PA/LNA HIGH 4-LAYER (SKY85728/SKY85735/SKY85746/LX5586H)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+-	
+-	config SLOT_1_RFE_TYPE_1
+-	depends on (SLOT_1_8812FE)
+-	bool "Type 1: external PA/LNA HIGH(SKY85746)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+ 	
++	select SLOT_1_EXT_PA if ((SLOT_1_8822BE || SLOT_1_8814BE || SLOT_1_8822CE || SLOT_1_8194BE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8822BE || SLOT_1_8814BE || SLOT_1_8822CE || SLOT_1_8194BE))
++	select SLOT_1_EXT_PA if ((SLOT_1_8812FE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8812FE))
+ 	config SLOT_1_RFE_TYPE_2
+-	depends on (SLOT_1_8814BE || SLOT_1_8194BE || SLOT_1_8814CR || SLOT_1_8194CR)
++	depends on (SLOT_1_8814BE || SLOT_1_8194BE || SLOT_1_8814CR || SLOT_1_8194CR) || (SLOT_1_8814AE || SLOT_1_8194AE)
+ 	bool "Type 2: internal PA/LNA 4-LAYER/6-LAYER"	
+ 
+-	config SLOT_1_RFE_TYPE_2
+-	depends on (SLOT_1_8814AE || SLOT_1_8194AE)
+-	bool "Type 2: external PA/LNA (2G SKY85300, 5G LX5586A)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+-
++	select SLOT_1_EXT_PA if ((SLOT_1_8814AE || SLOT_1_8194AE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8814AE || SLOT_1_8194AE))
+ 	config SLOT_1_RFE_TYPE_3
+-	depends on (SLOT_1_8814AE || SLOT_1_8194AE)
++	depends on (SLOT_1_8814AE || SLOT_1_8194AE) || (SLOT_1_8192FE || SLOT_1_8192EE_8192FE) || (SLOT_1_8812FE)
+ 	bool "Type 3: external PA/LNA (2G SE2623L/SKY85201-11, 5G SKY85405/SKY85605-11/SKY85610-11)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+-
+-	config SLOT_1_RFE_TYPE_3
+-	depends on (SLOT_1_8192FE || SLOT_1_8192EE_8192FE)
+-	bool "Type 3: internal PA/LNA 2-LAYER/6-LAYER"	
+-
+-	config SLOT_1_RFE_TYPE_3
+-	depends on (SLOT_1_8812FE)
+-	bool "Type 3: external PA/LNA (SKY85743)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+ 
++	select SLOT_1_EXT_PA if ((SLOT_1_8814AE || SLOT_1_8194AE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8814AE || SLOT_1_8194AE))
++	select SLOT_1_EXT_PA if ((SLOT_1_8812FE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8812FE))
+ 	config SLOT_1_RFE_TYPE_4
+-	depends on (SLOT_1_8814AE || SLOT_1_8194AE)
++	depends on (SLOT_1_8814AE || SLOT_1_8194AE) || (SLOT_1_8814BE || SLOT_1_8194BE)
+ 	bool "Type 4: external PA/LNA 4-LAYER (2G SKY85303/SKY85300-21, 5G SKY85717/SKY85717-21)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+-
+-	config SLOT_1_RFE_TYPE_4
+-	depends on (SLOT_1_8814BE || SLOT_1_8194BE)
+-	bool "Type 4: external PA/LNA (SKY85735)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+-
+-	#config SLOT_1_RFE_TYPE_4
+-	#depends on (SLOT_1_8822BE || SLOT_1_8822CE || SLOT_1_8812FE)
+-	#bool "Type 4: external PA/LNA TFBGA(SKY85742)"
+-	#select SLOT_1_EXT_PA
+-	#select SLOT_1_EXT_LNA
+ 
++	select SLOT_1_EXT_PA if ((SLOT_1_8814AE || SLOT_1_8194AE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8814AE || SLOT_1_8194AE))
++	select SLOT_1_EXT_PA if ((SLOT_1_8814BE || SLOT_1_8194BE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8814BE || SLOT_1_8194BE))
+ 	config SLOT_1_RFE_TYPE_5
+-	depends on (SLOT_1_8814BE || SLOT_1_8194BE)
++	depends on (SLOT_1_8814BE || SLOT_1_8194BE) || (SLOT_1_8814AE || SLOT_1_8194AE)
+ 	bool "Type 5: external PA/LNA (QPF4519)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+-
+-	config SLOT_1_RFE_TYPE_5
+-	depends on (SLOT_1_8814AE || SLOT_1_8194AE)
+-	bool "Type 5: external PA/LNA (2G SE2623L/SKY85201-11, 5G SKY85405/SKY85605-11)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+ 
++	select SLOT_1_EXT_PA if ((SLOT_1_8814BE || SLOT_1_8194BE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8814BE || SLOT_1_8194BE))
++	select SLOT_1_EXT_PA if ((SLOT_1_8814AE || SLOT_1_8194AE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8814AE || SLOT_1_8194AE))
+ 	config SLOT_1_RFE_TYPE_6
+ 	depends on (SLOT_1_8822BE || SLOT_1_8822CE)
+ 	bool "Type 6: external PA/LNA NORMAL 2-LAYER(SKY85742/SKY85753/RTC5639)"
+@@ -720,56 +626,36 @@
+ 	select SLOT_1_EXT_LNA
+ 
+ 	config SLOT_1_RFE_TYPE_7
+-	depends on (SLOT_1_8814AE || SLOT_1_8194AE)
++	depends on (SLOT_1_8814AE || SLOT_1_8194AE) || (SLOT_1_8822BE || SLOT_1_8822CE)
+ 	bool "Type 7: internal PA/LNA 6-LAYER"
+ 
+-	config SLOT_1_RFE_TYPE_7
+-	depends on (SLOT_1_8822BE || SLOT_1_8822CE)
+-	bool "Type 7: external PA/LNA NORMAL 4-LAYER(SKY85742/SKY85734/SKY85712/SKY85735/RTC5639)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+-
++	select SLOT_1_EXT_PA if ((SLOT_1_8822BE || SLOT_1_8822CE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8822BE || SLOT_1_8822CE))
+     config SLOT_1_RFE_TYPE_8
+-    depends on (SLOT_1_8822BE || SLOT_1_8822CE)
++    depends on (SLOT_1_8822BE || SLOT_1_8822CE) || (SLOT_1_8814AE || SLOT_1_8194AE)
+ 	bool "Type 8: internal PA/LNA TFBGA"
+ 	
+-	config SLOT_1_RFE_TYPE_8
+-	depends on (SLOT_1_8814AE || SLOT_1_8194AE)
+-	bool "Type 8: external PA/LNA 2-LAYER (2G SKY85300, 5G LX5586A/SKY85735)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+-
++	select SLOT_1_EXT_PA if ((SLOT_1_8814AE || SLOT_1_8194AE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8814AE || SLOT_1_8194AE))
+ 	config SLOT_1_RFE_TYPE_9
+-	depends on (SLOT_1_8814AE || SLOT_1_8194AE)
++	depends on (SLOT_1_8814AE || SLOT_1_8194AE) || (SLOT_1_8822BE || SLOT_1_8822CE)
+ 	bool "Type 9: internal 2L"
+ 
+-	config SLOT_1_RFE_TYPE_9
+-	depends on (SLOT_1_8822BE || SLOT_1_8822CE)
+-	bool "Type 9: external LNA NORMAL 4-LAYER(SKY85608)"
+-	select SLOT_1_EXT_LNA
+-
++	select SLOT_1_EXT_LNA if ((SLOT_1_8822BE || SLOT_1_8822CE))
+ 	config SLOT_1_RFE_TYPE_10
+-	depends on (SLOT_1_8822BE || SLOT_1_8822CE)
++	depends on (SLOT_1_8822BE || SLOT_1_8822CE) || (SLOT_1_8814AE || SLOT_1_8194AE)
+ 	bool "Type 10: internal PA/LNA with TRSW(GW2159 / SKY13351)"
+ 
+-	config SLOT_1_RFE_TYPE_10
+-	depends on (SLOT_1_8814AE || SLOT_1_8194AE)
+-	bool "Type 10: external PA/LNA (2G SKY85303 , 5G SKY85746-11)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+-	
++	select SLOT_1_EXT_PA if ((SLOT_1_8814AE || SLOT_1_8194AE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8814AE || SLOT_1_8194AE))
+ 	config SLOT_1_RFE_TYPE_11
+-	depends on (SLOT_1_8822BE || SLOT_1_8822CE)
++	depends on (SLOT_1_8822BE || SLOT_1_8822CE) || (SLOT_1_8814AE || SLOT_1_8194AE)
+ 	bool "Type 11: external PA/LNA TFBGA(SKY85742)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+-
+-	config SLOT_1_RFE_TYPE_11
+-	depends on (SLOT_1_8814AE || SLOT_1_8194AE)
+-	bool "Type 11: external PA/LNA 6-LAYER (2G RTC7625HE/RTC5625HE-1/RTC7663, 5G RTC5638H/RTC5638HE/RTC7657)"
+-	select SLOT_1_EXT_PA
+-	select SLOT_1_EXT_LNA
+ 
++	select SLOT_1_EXT_PA if ((SLOT_1_8822BE || SLOT_1_8822CE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8822BE || SLOT_1_8822CE))
++	select SLOT_1_EXT_PA if ((SLOT_1_8814AE || SLOT_1_8194AE))
++	select SLOT_1_EXT_LNA if ((SLOT_1_8814AE || SLOT_1_8194AE))
+ 	config SLOT_1_RFE_TYPE_12
+ 	depends on (SLOT_1_8192FE || SLOT_1_8192EE_8192FE)
+ 	bool "Type 12: external PA/LNA (RWL2305-21)"
 --- a/drivers/watchdog/Kconfig
 +++ b/drivers/watchdog/Kconfig
 @@ -1071,6 +1071,12 @@
@@ -3636,7 +4867,7 @@
  
 --- a/include/linux/if_pppox.h
 +++ b/include/linux/if_pppox.h
-@@ -80,4 +80,18 @@
+@@ -80,4 +80,34 @@
      PPPOX_DEAD		= 16  /* dead, useless, please clean me up!*/
  };
  
@@ -3653,6 +4884,22 @@
 +extern spinlock_t stMagic_num_lock;
 +
 +#endif
++
++/* 7.1 hid the flexible-array members of the uapi PPPoE structs behind
++ * #ifndef __KERNEL__ (uapi hardening):
++ *
++ *   struct pppoe_tag { __be16 tag_type; __be16 tag_len;
++ *   #ifndef __KERNEL__
++ *           char tag_data[];
++ *   #endif  } __packed;
++ *
++ * and likewise `struct pppoe_tag tag[]` in struct pppoe_hdr. In-kernel code is
++ * expected to compute those offsets itself. Both Realtek bridge-extension
++ * files (rtl8192cd/8192cd_br_ext.c and g6_wifi_driver/core/rtw_br_ext.c) parse
++ * PPPoE tags, so the accessors live here rather than being duplicated.
++ * Both structs are __packed, so sizeof() is the exact on-wire header length. */
++#define pppoe_hdr_tags(ph)	((unsigned char *)((ph) + 1))
++#define pppoe_tag_data(t)	((unsigned char *)((t) + 1))
 +
  #endif /* !(__LINUX_IF_PPPOX_H) */
 --- a/include/linux/if_vlan.h
@@ -4129,6 +5376,2212 @@
  #define SPI_NO_TX		BIT(31)		/* No transmit wire */
  #define SPI_NO_RX		BIT(30)		/* No receive wire */
  	/*
+--- /dev/null
++++ b/include/net80211/ieee80211_crypto.h
+@@ -0,0 +1,206 @@
++/*-
++ * Copyright (c) 2001 Atsushi Onoe
++ * Copyright (c) 2002-2005 Sam Leffler, Errno Consulting
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The name of the author may not be used to endorse or promote products
++ *    derived from this software without specific prior written permission.
++ *
++ * Alternatively, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2 as published by the Free
++ * Software Foundation.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ * $Id: ieee80211_crypto.h 1441 2006-02-06 16:03:21Z mrenzmann $
++ */
++#ifndef _NET80211_IEEE80211_CRYPTO_H_
++#define _NET80211_IEEE80211_CRYPTO_H_
++
++/*
++ * 802.11 protocol crypto-related definitions.
++ */
++#define	IEEE80211_KEYBUF_SIZE	16
++#define	IEEE80211_MICBUF_SIZE	(8 + 8)		/* space for both tx+rx keys */
++#define IEEE80211_TID_SIZE	17		/* total number of TIDs */
++
++/*
++ * Old WEP-style key.  Deprecated.
++ */
++struct ieee80211_wepkey {
++	u_int wk_len;				/* key length in bytes */
++	u_int8_t wk_key[IEEE80211_KEYBUF_SIZE];
++};
++
++struct ieee80211_cipher;
++
++/*
++ * Crypto key state.  There is sufficient room for all supported
++ * ciphers (see below).  The underlying ciphers are handled
++ * separately through loadable cipher modules that register with
++ * the generic crypto support.  A key has a reference to an instance
++ * of the cipher; any per-key state is hung off wk_private by the
++ * cipher when it is attached.  Ciphers are automatically called
++ * to detach and cleanup any such state when the key is deleted.
++ *
++ * The generic crypto support handles encap/decap of cipher-related
++ * frame contents for both hardware- and software-based implementations.
++ * A key requiring software crypto support is automatically flagged and
++ * the cipher is expected to honor this and do the necessary work.
++ * Ciphers such as TKIP may also support mixed hardware/software
++ * encrypt/decrypt and MIC processing.
++ */
++/* XXX need key index typedef */
++/* XXX pack better? */
++/* XXX 48-bit rsc/tsc */
++struct ieee80211_key {
++	u_int8_t wk_keylen;		/* key length in bytes */
++	u_int8_t wk_flags;
++#define	IEEE80211_KEY_XMIT	0x01	/* key used for xmit */
++#define	IEEE80211_KEY_RECV	0x02	/* key used for recv */
++#define	IEEE80211_KEY_GROUP	0x04	/* key used for WPA group operation */
++#define	IEEE80211_KEY_SWCRYPT	0x10	/* host-based encrypt/decrypt */
++#define	IEEE80211_KEY_SWMIC	0x20	/* host-based enmic/demic */
++	u_int16_t wk_keyix;		/* key index */
++	u_int8_t wk_key[IEEE80211_KEYBUF_SIZE+IEEE80211_MICBUF_SIZE];
++#define	wk_txmic	wk_key+IEEE80211_KEYBUF_SIZE+0	/* XXX can't () right */
++#define	wk_rxmic	wk_key+IEEE80211_KEYBUF_SIZE+8	/* XXX can't () right */
++	u_int64_t wk_keyrsc[IEEE80211_TID_SIZE];	/* key receive sequence counter */
++	u_int64_t wk_keytsc;		/* key transmit sequence counter */
++	const struct ieee80211_cipher *wk_cipher;
++	void *wk_private;		/* private cipher state */
++};
++#define	IEEE80211_KEY_COMMON 		/* common flags passed in by apps */\
++	(IEEE80211_KEY_XMIT | IEEE80211_KEY_RECV | IEEE80211_KEY_GROUP)
++
++/*
++ * NB: these values are ordered carefully; there are lots of
++ * of implications in any reordering.  In particular beware
++ * that 4 is not used to avoid conflicting with IEEE80211_F_PRIVACY.
++ */
++#define	IEEE80211_CIPHER_WEP		0
++#define	IEEE80211_CIPHER_TKIP		1
++#define	IEEE80211_CIPHER_AES_OCB	2
++#define	IEEE80211_CIPHER_AES_CCM	3
++#define IEEE80211_CIPHER_AES_CMAC	4
++#define	IEEE80211_CIPHER_CKIP		5
++#define	IEEE80211_CIPHER_NONE		6	/* pseudo value */
++
++#define	IEEE80211_CIPHER_MAX		(IEEE80211_CIPHER_NONE+1)
++
++#define	IEEE80211_KEYIX_NONE	((u_int16_t) - 1)
++
++#if defined(__KERNEL__) || defined(_KERNEL)
++
++struct ieee80211com;
++struct ieee80211vap;
++struct ieee80211_node;
++struct sk_buff;
++
++void ieee80211_crypto_attach(struct ieee80211com *);
++void ieee80211_crypto_detach(struct ieee80211com *);
++void ieee80211_crypto_vattach(struct ieee80211vap *);
++void ieee80211_crypto_vdetach(struct ieee80211vap *);
++int ieee80211_crypto_newkey(struct ieee80211vap *, int, int,
++	struct ieee80211_key *);
++int ieee80211_crypto_delkey(struct ieee80211vap *, struct ieee80211_key *,
++	struct ieee80211_node *);
++int ieee80211_crypto_setkey(struct ieee80211vap *, struct ieee80211_key *,
++	const u_int8_t macaddr[IEEE80211_ADDR_LEN], struct ieee80211_node *);
++void ieee80211_crypto_delglobalkeys(struct ieee80211vap *);
++
++/*
++ * Template for a supported cipher.  Ciphers register with the
++ * crypto code and are typically loaded as separate modules
++ * (the null cipher is always present).
++ * XXX may need refcnts
++ */
++struct ieee80211_cipher {
++	const char *ic_name;		/* printable name */
++	u_int ic_cipher;			/* IEEE80211_CIPHER_* */
++	u_int ic_header;			/* size of privacy header (bytes) */
++	u_int ic_trailer;		/* size of privacy trailer (bytes) */
++	u_int ic_miclen;			/* size of mic trailer (bytes) */
++	void *(*ic_attach)(struct ieee80211vap *, struct ieee80211_key *);
++	void (*ic_detach)(struct ieee80211_key *);
++	int (*ic_setkey)(struct ieee80211_key *);
++	int (*ic_encap)(struct ieee80211_key *, struct sk_buff *, u_int8_t);
++	int (*ic_decap)(struct ieee80211_key *, struct sk_buff *, int);
++	int (*ic_enmic)(struct ieee80211_key *, struct sk_buff *, int);
++	int (*ic_demic)(struct ieee80211_key *, struct sk_buff *, int);
++};
++extern const struct ieee80211_cipher ieee80211_cipher_none;
++
++void ieee80211_crypto_register(const struct ieee80211_cipher *);
++void ieee80211_crypto_unregister(const struct ieee80211_cipher *);
++int ieee80211_crypto_available(u_int);
++
++struct ieee80211_key *ieee80211_crypto_encap(struct ieee80211_node *,
++	struct sk_buff *);
++struct ieee80211_key *ieee80211_crypto_decap(struct ieee80211_node *,
++	struct sk_buff *, int);
++
++/*
++ * Check and remove any MIC.
++ */
++static __inline int
++ieee80211_crypto_demic(struct ieee80211vap *vap, struct ieee80211_key *k,
++	struct sk_buff *skb, int hdrlen)
++{
++	const struct ieee80211_cipher *cip = k->wk_cipher;
++	return (cip->ic_miclen > 0 ? cip->ic_demic(k, skb, hdrlen) : 1);
++}
++
++/*
++ * Add any MIC.
++ */
++static __inline int
++ieee80211_crypto_enmic(struct ieee80211vap *vap, struct ieee80211_key *k,
++	struct sk_buff *skb, int force)
++{
++	const struct ieee80211_cipher *cip = k->wk_cipher;
++	return (cip->ic_miclen > 0 ? cip->ic_enmic(k, skb, force) : 1);
++}
++
++/* 
++ * Reset key state to an unused state.  The crypto
++ * key allocation mechanism ensures other state (e.g.
++ * key data) is properly setup before a key is used.
++ */
++static __inline void
++ieee80211_crypto_resetkey(struct ieee80211vap *vap, struct ieee80211_key *k,
++	u_int16_t ix)
++{
++	k->wk_cipher = &ieee80211_cipher_none;;
++	k->wk_private = k->wk_cipher->ic_attach(vap, k);
++	k->wk_keyix = ix;
++	k->wk_flags = IEEE80211_KEY_XMIT | IEEE80211_KEY_RECV;
++}
++
++/*
++ * Crypto-related notification methods.
++ */
++void ieee80211_notify_replay_failure(struct ieee80211vap *,
++	const struct ieee80211_frame *, const struct ieee80211_key *,
++	u_int64_t rsc);
++void ieee80211_notify_michael_failure(struct ieee80211vap *,
++	const struct ieee80211_frame *, u_int keyix);
++#endif /* defined(__KERNEL__) || defined(_KERNEL) */
++#endif /* _NET80211_IEEE80211_CRYPTO_H_ */
+--- /dev/null
++++ b/include/net80211/ieee80211.h
+@@ -0,0 +1,949 @@
++/*-
++ * Copyright (c) 2001 Atsushi Onoe
++ * Copyright (c) 2002-2005 Sam Leffler, Errno Consulting
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The name of the author may not be used to endorse or promote products
++ *    derived from this software without specific prior written permission.
++ *
++ * Alternatively, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2 as published by the Free
++ * Software Foundation.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ * $Id: ieee80211.h 3313 2008-01-30 21:07:22Z proski $
++ */
++#ifndef _NET80211_IEEE80211_H_
++#define _NET80211_IEEE80211_H_
++
++#ifndef _LINUX_TYPES_H
++#include <linux/types.h>
++#endif
++
++#ifndef __packed
++#define	__packed	__attribute__((__packed__))
++#endif
++
++/*
++ * 802.11 protocol definitions.
++ */
++
++#define	IEEE80211_ADDR_LEN		6		/* size of 802.11 address */
++/* is 802.11 address multicast/broadcast? */
++#define	IEEE80211_IS_MULTICAST(_a)	(*(_a) & 0x01)
++
++/* IEEE 802.11 PLCP header */
++struct ieee80211_plcp_hdr {
++	u_int16_t i_sfd;
++	u_int8_t i_signal;
++	u_int8_t i_service;
++	u_int16_t i_length;
++	u_int16_t i_crc;
++} __packed;
++
++#define IEEE80211_PLCP_SFD      0xF3A0 
++#define IEEE80211_PLCP_SERVICE  0x00
++
++/*
++ * generic definitions for IEEE 802.11 frames
++ */
++struct ieee80211_frame {
++	u_int8_t i_fc[2];
++	__le16 i_dur;
++	u_int8_t i_addr1[IEEE80211_ADDR_LEN];
++	u_int8_t i_addr2[IEEE80211_ADDR_LEN];
++	u_int8_t i_addr3[IEEE80211_ADDR_LEN];
++	u_int8_t i_seq[2];
++	/* possibly followed by addr4[IEEE80211_ADDR_LEN]; */
++	/* see below */
++} __packed;
++
++struct ieee80211_qosframe {
++	u_int8_t i_fc[2];
++	__le16 i_dur;
++	u_int8_t i_addr1[IEEE80211_ADDR_LEN];
++	u_int8_t i_addr2[IEEE80211_ADDR_LEN];
++	u_int8_t i_addr3[IEEE80211_ADDR_LEN];
++	u_int8_t i_seq[2];
++	u_int8_t i_qos[2];
++	/* possibly followed by addr4[IEEE80211_ADDR_LEN]; */
++	/* see below */
++} __packed;
++
++struct ieee80211_qoscntl {
++	u_int8_t i_qos[2];
++};
++
++struct ieee80211_frame_addr4 {
++	u_int8_t i_fc[2];
++	__le16 i_dur;
++	u_int8_t i_addr1[IEEE80211_ADDR_LEN];
++	u_int8_t i_addr2[IEEE80211_ADDR_LEN];
++	u_int8_t i_addr3[IEEE80211_ADDR_LEN];
++	u_int8_t i_seq[2];
++	u_int8_t i_addr4[IEEE80211_ADDR_LEN];
++} __packed;
++
++
++struct ieee80211_qosframe_addr4 {
++	u_int8_t i_fc[2];
++	__le16 i_dur;
++	u_int8_t i_addr1[IEEE80211_ADDR_LEN];
++	u_int8_t i_addr2[IEEE80211_ADDR_LEN];
++	u_int8_t i_addr3[IEEE80211_ADDR_LEN];
++	u_int8_t i_seq[2];
++	u_int8_t i_addr4[IEEE80211_ADDR_LEN];
++	u_int8_t i_qos[2];
++} __packed;
++
++struct ieee80211_ctlframe_addr2 {
++	u_int8_t i_fc[2];
++	__le16 i_aidordur; /* AID or duration */
++	u_int8_t i_addr1[IEEE80211_ADDR_LEN];
++	u_int8_t i_addr2[IEEE80211_ADDR_LEN];
++} __packed;
++
++#define	IEEE80211_FC0_VERSION_MASK		0x03
++#define	IEEE80211_FC0_VERSION_SHIFT		0
++#define	IEEE80211_FC0_VERSION_0			0x00
++#define	IEEE80211_FC0_TYPE_MASK			0x0c
++#define	IEEE80211_FC0_TYPE_SHIFT		2
++#define	IEEE80211_FC0_TYPE_MGT			0x00
++#define	IEEE80211_FC0_TYPE_CTL			0x04
++#define	IEEE80211_FC0_TYPE_DATA			0x08
++
++#define	IEEE80211_FC0_SUBTYPE_MASK		0xf0
++#define	IEEE80211_FC0_SUBTYPE_SHIFT		4
++/* for TYPE_MGT */
++#define	IEEE80211_FC0_SUBTYPE_ASSOC_REQ		0x00
++#define	IEEE80211_FC0_SUBTYPE_ASSOC_RESP	0x10
++#define	IEEE80211_FC0_SUBTYPE_REASSOC_REQ	0x20
++#define	IEEE80211_FC0_SUBTYPE_REASSOC_RESP	0x30
++#define	IEEE80211_FC0_SUBTYPE_PROBE_REQ		0x40
++#define	IEEE80211_FC0_SUBTYPE_PROBE_RESP	0x50
++#define	IEEE80211_FC0_SUBTYPE_BEACON		0x80
++#define	IEEE80211_FC0_SUBTYPE_ATIM		0x90
++#define	IEEE80211_FC0_SUBTYPE_DISASSOC		0xa0
++#define	IEEE80211_FC0_SUBTYPE_AUTH		0xb0
++#define	IEEE80211_FC0_SUBTYPE_DEAUTH		0xc0
++#define IEEE80211_FC0_SUBTYPE_ACTION		0xd0
++/* for TYPE_CTL */
++#define	IEEE80211_FC0_SUBTYPE_PS_POLL		0xa0
++#define	IEEE80211_FC0_SUBTYPE_RTS		0xb0
++#define	IEEE80211_FC0_SUBTYPE_CTS		0xc0
++#define	IEEE80211_FC0_SUBTYPE_ACK		0xd0
++#define	IEEE80211_FC0_SUBTYPE_CF_END		0xe0
++#define	IEEE80211_FC0_SUBTYPE_CF_END_ACK	0xf0
++/* for TYPE_DATA (bit combination) */
++#define	IEEE80211_FC0_SUBTYPE_DATA		0x00
++#define	IEEE80211_FC0_SUBTYPE_CF_ACK		0x10
++#define	IEEE80211_FC0_SUBTYPE_CF_POLL		0x20
++#define	IEEE80211_FC0_SUBTYPE_CF_ACPL		0x30
++#define	IEEE80211_FC0_SUBTYPE_NODATA		0x40
++#define	IEEE80211_FC0_SUBTYPE_CFACK		0x50
++#define	IEEE80211_FC0_SUBTYPE_CFPOLL		0x60
++#define	IEEE80211_FC0_SUBTYPE_CF_ACK_CF_ACK	0x70
++#define	IEEE80211_FC0_SUBTYPE_QOS		0x80
++#define	IEEE80211_FC0_SUBTYPE_QOS_NULL		0xc0
++
++#define	IEEE80211_FC1_DIR_MASK			0x03
++#define	IEEE80211_FC1_DIR_NODS			0x00	/* STA->STA */
++#define	IEEE80211_FC1_DIR_TODS			0x01	/* STA->AP  */
++#define	IEEE80211_FC1_DIR_FROMDS		0x02	/* AP ->STA */
++#define	IEEE80211_FC1_DIR_DSTODS		0x03	/* AP ->AP  */
++
++#define	IEEE80211_FC1_MORE_FRAG			0x04
++#define	IEEE80211_FC1_RETRY			0x08
++#define	IEEE80211_FC1_PWR_MGT			0x10
++#define	IEEE80211_FC1_MORE_DATA			0x20
++#define	IEEE80211_FC1_PROT			0x40
++#define	IEEE80211_FC1_ORDER			0x80
++
++#define	IEEE80211_SEQ_FRAG_MASK			0x000f
++#define	IEEE80211_SEQ_FRAG_SHIFT		0
++#define	IEEE80211_SEQ_SEQ_MASK			0xfff0
++#define	IEEE80211_SEQ_SEQ_SHIFT			4
++
++#define	IEEE80211_SEQ_LEQ(a,b)	((int)((a)-(b)) <= 0)
++
++#define	IEEE80211_NWID_LEN			32
++
++#define	IEEE80211_QOS_TXOP			0x00ff
++/* bit 8 is reserved */
++#define	IEEE80211_QOS_ACKPOLICY			0x60
++#define	IEEE80211_QOS_ACKPOLICY_S		5
++#define	IEEE80211_QOS_EOSP			0x10
++#define	IEEE80211_QOS_EOSP_S			4
++#define	IEEE80211_QOS_TID			0x0f
++
++/*
++ * Country/Region Codes from MS WINNLS.H
++ * Numbering from ISO 3166
++ * XXX belongs elsewhere
++ */
++enum CountryCode {
++    CTRY_ALBANIA              = 8,       /* Albania */
++    CTRY_ALGERIA              = 12,      /* Algeria */
++    CTRY_ARGENTINA            = 32,      /* Argentina */
++    CTRY_ARMENIA              = 51,      /* Armenia */
++    CTRY_AUSTRALIA            = 36,      /* Australia */
++    CTRY_AUSTRIA              = 40,      /* Austria */
++    CTRY_AZERBAIJAN           = 31,      /* Azerbaijan */
++    CTRY_BAHRAIN              = 48,      /* Bahrain */
++    CTRY_BELARUS              = 112,     /* Belarus */
++    CTRY_BELGIUM              = 56,      /* Belgium */
++    CTRY_BELIZE               = 84,      /* Belize */
++    CTRY_BOLIVIA              = 68,      /* Bolivia */
++    CTRY_BRAZIL               = 76,      /* Brazil */
++    CTRY_BRUNEI_DARUSSALAM    = 96,      /* Brunei Darussalam */
++    CTRY_BULGARIA             = 100,     /* Bulgaria */
++    CTRY_CANADA               = 124,     /* Canada */
++    CTRY_CHILE                = 152,     /* Chile */
++    CTRY_CHINA                = 156,     /* People's Republic of China */
++    CTRY_COLOMBIA             = 170,     /* Colombia */
++    CTRY_COSTA_RICA           = 188,     /* Costa Rica */
++    CTRY_CROATIA              = 191,     /* Croatia */
++    CTRY_CYPRUS               = 196,
++    CTRY_CZECH                = 203,     /* Czech Republic */
++    CTRY_DENMARK              = 208,     /* Denmark */
++    CTRY_DOMINICAN_REPUBLIC   = 214,     /* Dominican Republic */
++    CTRY_ECUADOR              = 218,     /* Ecuador */
++    CTRY_EGYPT                = 818,     /* Egypt */
++    CTRY_EL_SALVADOR          = 222,     /* El Salvador */
++    CTRY_ESTONIA              = 233,     /* Estonia */
++    CTRY_FAEROE_ISLANDS       = 234,     /* Faeroe Islands */
++    CTRY_FINLAND              = 246,     /* Finland */
++    CTRY_FRANCE               = 250,     /* France */
++    CTRY_FRANCE2              = 255,     /* France2 */
++    CTRY_GEORGIA              = 268,     /* Georgia */
++    CTRY_GERMANY              = 276,     /* Germany */
++    CTRY_GREECE               = 300,     /* Greece */
++    CTRY_GUATEMALA            = 320,     /* Guatemala */
++    CTRY_HONDURAS             = 340,     /* Honduras */
++    CTRY_HONG_KONG            = 344,     /* Hong Kong S.A.R., P.R.C. */
++    CTRY_HUNGARY              = 348,     /* Hungary */
++    CTRY_ICELAND              = 352,     /* Iceland */
++    CTRY_INDIA                = 356,     /* India */
++    CTRY_INDONESIA            = 360,     /* Indonesia */
++    CTRY_IRAN                 = 364,     /* Iran */
++    CTRY_IRAQ                 = 368,     /* Iraq */
++    CTRY_IRELAND              = 372,     /* Ireland */
++    CTRY_ISRAEL               = 376,     /* Israel */
++    CTRY_ITALY                = 380,     /* Italy */
++    CTRY_JAMAICA              = 388,     /* Jamaica */
++    CTRY_JAPAN                = 392,     /* Japan */
++    CTRY_JAPAN1               = 393,     /* Japan (JP1) */
++    CTRY_JAPAN2               = 394,     /* Japan (JP0) */
++    CTRY_JAPAN3               = 395,     /* Japan (JP1-1) */
++    CTRY_JAPAN4               = 396,     /* Japan (JE1) */
++    CTRY_JAPAN5               = 397,     /* Japan (JE2) */
++    CTRY_JAPAN6               = 399,	 /* Japan (JP6) */
++    CTRY_JAPAN7               = 900,	 /* Japan */
++    CTRY_JAPAN8               = 901,	 /* Japan */
++    CTRY_JAPAN9               = 902,	 /* Japan */
++    CTRY_JAPAN10	      = 903,	 /* Japan */
++    CTRY_JAPAN11	      = 904,	 /* Japan */
++    CTRY_JAPAN12	      = 905,	 /* Japan */
++    CTRY_JAPAN13	      = 906,	 /* Japan */
++    CTRY_JAPAN14	      = 907,	 /* Japan */
++    CTRY_JAPAN15	      = 908,	 /* Japan */
++    CTRY_JAPAN16	      = 909,	 /* Japan */
++    CTRY_JAPAN17	      = 910,	 /* Japan */
++    CTRY_JAPAN18	      = 911,	 /* Japan */
++    CTRY_JAPAN19	      = 912,	 /* Japan */
++    CTRY_JAPAN20	      = 913,	 /* Japan */
++    CTRY_JAPAN21	      = 914,	 /* Japan */
++    CTRY_JAPAN22	      = 915,	 /* Japan */
++    CTRY_JAPAN23	      = 916,	 /* Japan */
++    CTRY_JAPAN24	      = 917,	 /* Japan */
++    CTRY_JAPAN25	      = 918,	 /* Japan */
++    CTRY_JAPAN26	      = 919,	 /* Japan */
++    CTRY_JAPAN27	      = 920,	 /* Japan */
++    CTRY_JAPAN28	      = 921,	 /* Japan */
++    CTRY_JAPAN29	      = 922,	 /* Japan */
++    CTRY_JAPAN30	      = 923,	 /* Japan */
++    CTRY_JAPAN31	      = 924,	 /* Japan */
++    CTRY_JAPAN32	      = 925,	 /* Japan */
++    CTRY_JAPAN33	      = 926,	 /* Japan */
++    CTRY_JAPAN34	      = 927,	 /* Japan */
++    CTRY_JAPAN35	      = 928,	 /* Japan */
++    CTRY_JAPAN36	      = 929,	 /* Japan */
++    CTRY_JAPAN37	      = 930,	 /* Japan */
++    CTRY_JAPAN38	      = 931,	 /* Japan */
++    CTRY_JAPAN39	      = 932,	 /* Japan */
++    CTRY_JAPAN40	      = 933,	 /* Japan */
++    CTRY_JAPAN41	      = 934,	 /* Japan */
++    CTRY_JAPAN42	      = 935,	 /* Japan */
++    CTRY_JAPAN43	      = 936,	 /* Japan */
++    CTRY_JAPAN44	      = 937,	 /* Japan */
++    CTRY_JAPAN45	      = 938,	 /* Japan */
++    CTRY_JAPAN46	      = 939,	 /* Japan */
++    CTRY_JAPAN47	      = 940,	 /* Japan */
++    CTRY_JAPAN48	      = 941,	 /* Japan */
++    CTRY_JORDAN               = 400,     /* Jordan */
++    CTRY_KAZAKHSTAN           = 398,     /* Kazakhstan */
++    CTRY_KENYA                = 404,     /* Kenya */
++    CTRY_KOREA_NORTH          = 408,     /* North Korea */
++    CTRY_KOREA_ROC            = 410,     /* South Korea */
++    CTRY_KOREA_ROC2           = 411,     /* South Korea */
++    CTRY_KUWAIT               = 414,     /* Kuwait */
++    CTRY_LATVIA               = 428,     /* Latvia */
++    CTRY_LEBANON              = 422,     /* Lebanon */
++    CTRY_LIBYA                = 434,     /* Libya */
++    CTRY_LIECHTENSTEIN        = 438,     /* Liechtenstein */
++    CTRY_LITHUANIA            = 440,     /* Lithuania */
++    CTRY_LUXEMBOURG           = 442,     /* Luxembourg */
++    CTRY_MACAU                = 446,     /* Macau */
++    CTRY_MACEDONIA            = 807,     /* the Former Yugoslav Republic of Macedonia */
++    CTRY_MALAYSIA             = 458,     /* Malaysia */
++    CTRY_MEXICO               = 484,     /* Mexico */
++    CTRY_MONACO               = 492,     /* Principality of Monaco */
++    CTRY_MOROCCO              = 504,     /* Morocco */
++    CTRY_NETHERLANDS          = 528,     /* Netherlands */
++    CTRY_NEW_ZEALAND          = 554,     /* New Zealand */
++    CTRY_NICARAGUA            = 558,     /* Nicaragua */
++    CTRY_NORWAY               = 578,     /* Norway */
++    CTRY_OMAN                 = 512,     /* Oman */
++    CTRY_PAKISTAN             = 586,     /* Islamic Republic of Pakistan */
++    CTRY_PANAMA               = 591,     /* Panama */
++    CTRY_PARAGUAY             = 600,     /* Paraguay */
++    CTRY_PERU                 = 604,     /* Peru */
++    CTRY_PHILIPPINES          = 608,     /* Republic of the Philippines */
++    CTRY_POLAND               = 616,     /* Poland */
++    CTRY_PORTUGAL             = 620,     /* Portugal */
++    CTRY_PUERTO_RICO          = 630,     /* Puerto Rico */
++    CTRY_QATAR                = 634,     /* Qatar */
++    CTRY_ROMANIA              = 642,     /* Romania */
++    CTRY_RUSSIA               = 643,     /* Russia */
++    CTRY_SAUDI_ARABIA         = 682,     /* Saudi Arabia */
++    CTRY_SINGAPORE            = 702,     /* Singapore */
++    CTRY_SLOVAKIA             = 703,     /* Slovak Republic */
++    CTRY_SLOVENIA             = 705,     /* Slovenia */
++    CTRY_SOUTH_AFRICA         = 710,     /* South Africa */
++    CTRY_SPAIN                = 724,     /* Spain */
++    CTRY_SWEDEN               = 752,     /* Sweden */
++    CTRY_SWITZERLAND          = 756,     /* Switzerland */
++    CTRY_SYRIA                = 760,     /* Syria */
++    CTRY_TAIWAN               = 158,     /* Taiwan */
++    CTRY_THAILAND             = 764,     /* Thailand */
++    CTRY_TRINIDAD_Y_TOBAGO    = 780,     /* Trinidad y Tobago */
++    CTRY_TUNISIA              = 788,     /* Tunisia */
++    CTRY_TURKEY               = 792,     /* Turkey */
++    CTRY_UAE                  = 784,     /* U.A.E. */
++    CTRY_UKRAINE              = 804,     /* Ukraine */
++    CTRY_UNITED_KINGDOM       = 826,     /* United Kingdom */
++    CTRY_UNITED_STATES        = 840,     /* United States */
++    CTRY_UNITED_STATES_FCC49  = 842,     /* United States (Public Safety)*/
++    CTRY_URUGUAY              = 858,     /* Uruguay */
++    CTRY_UZBEKISTAN           = 860,     /* Uzbekistan */
++    CTRY_VENEZUELA            = 862,     /* Venezuela */
++    CTRY_VIET_NAM             = 704,     /* Viet Nam */
++    CTRY_YEMEN                = 887,     /* Yemen */
++    CTRY_ZIMBABWE             = 716      /* Zimbabwe */
++};
++
++/* 
++ * Generic information element
++ */
++struct ieee80211_ie {
++	u_int8_t id;
++	u_int8_t len;
++	u_int8_t info[0];
++} __packed;
++
++/* 
++ * Country information element.
++ */
++#define IEEE80211_COUNTRY_MAX_TRIPLETS (83)
++struct ieee80211_ie_country {
++	u_int8_t country_id;
++	u_int8_t country_len;
++	u_int8_t country_str[3];
++	u_int8_t country_triplet[IEEE80211_COUNTRY_MAX_TRIPLETS * 3];
++} __packed;
++
++/*
++ * Channel Switch Announcement information element.
++ */
++struct ieee80211_ie_csa {
++	u_int8_t csa_id;	/* IEEE80211_ELEMID_CHANSWITCHANN */
++	u_int8_t csa_len;	/* == 3 */
++	u_int8_t csa_mode;	/* Channel Switch Mode: 1 == stop transmission until CS */
++	u_int8_t csa_chan;	/* New Channel Number */
++	u_int8_t csa_count;	/* TBTTs until Channel Switch happens */
++} __packed;
++
++/* minimal Channel Switch Count in the initial announcement */
++#define IEEE80211_CSA_PROTECTION_PERIOD 3
++
++/* maximum allowed deviance of measurement of intervals between CSA in Beacons */
++#define IEEE80211_CSA_SANITY_THRESHOLD 100    
++
++
++/* does frame have QoS sequence control data */
++#define	IEEE80211_QOS_HAS_SEQ(wh) \
++	(((wh)->i_fc[0] & \
++	  (IEEE80211_FC0_TYPE_MASK | IEEE80211_FC0_SUBTYPE_QOS)) == \
++	  (IEEE80211_FC0_TYPE_DATA | IEEE80211_FC0_SUBTYPE_QOS))
++
++#define WME_QOSINFO_COUNT	0x0f  /* Mask for Param Set Count field */
++/*
++ * WME/802.11e information element.
++ */
++struct ieee80211_ie_wme {
++	u_int8_t wme_id;		/* IEEE80211_ELEMID_VENDOR */
++	u_int8_t wme_len;	/* length in bytes */
++	u_int8_t wme_oui[3];	/* 0x00, 0x50, 0xf2 */
++	u_int8_t wme_type;	/* OUI type */
++	u_int8_t wme_subtype;	/* OUI subtype */
++	u_int8_t wme_version;	/* spec revision */
++	u_int8_t wme_info;	/* QoS info */
++} __packed;
++
++/*
++ * WME/802.11e Tspec Element
++ */
++struct ieee80211_wme_tspec {
++	u_int8_t ts_id;
++	u_int8_t ts_len;
++	u_int8_t ts_oui[3];
++	u_int8_t ts_oui_type;
++	u_int8_t ts_oui_subtype;
++	u_int8_t ts_version;
++	u_int8_t ts_tsinfo[3];
++	u_int8_t ts_nom_msdu[2];
++	u_int8_t ts_max_msdu[2];
++	u_int8_t ts_min_svc[4];
++	u_int8_t ts_max_svc[4];
++	u_int8_t ts_inactv_intv[4];
++	u_int8_t ts_susp_intv[4];
++	u_int8_t ts_start_svc[4];
++	u_int8_t ts_min_rate[4];
++	u_int8_t ts_mean_rate[4];
++	u_int8_t ts_max_burst[4];
++	u_int8_t ts_min_phy[4];
++	u_int8_t ts_peak_rate[4];
++	u_int8_t ts_delay[4];
++	u_int8_t ts_surplus[2];
++	u_int8_t ts_medium_time[2];
++} __packed;
++
++/*
++ * WME AC parameter field
++ */
++
++struct ieee80211_wme_acparams {
++	u_int8_t acp_aci_aifsn;
++	u_int8_t acp_logcwminmax;
++	u_int16_t acp_txop;
++} __packed;
++
++#define IEEE80211_WME_PARAM_LEN 24
++#define WME_NUM_AC		4	/* 4 AC categories */
++
++#define WME_PARAM_ACI		0x60	/* Mask for ACI field */
++#define WME_PARAM_ACI_S		5	/* Shift for ACI field */
++#define WME_PARAM_ACM		0x10	/* Mask for ACM bit */
++#define WME_PARAM_ACM_S		4	/* Shift for ACM bit */
++#define WME_PARAM_AIFSN		0x0f	/* Mask for aifsn field */
++#define WME_PARAM_AIFSN_S	0	/* Shift for aifsn field */
++#define WME_PARAM_LOGCWMIN	0x0f	/* Mask for CwMin field (in log) */
++#define WME_PARAM_LOGCWMIN_S	0	/* Shift for CwMin field */
++#define WME_PARAM_LOGCWMAX	0xf0	/* Mask for CwMax field (in log) */
++#define WME_PARAM_LOGCWMAX_S	4	/* Shift for CwMax field */
++
++#define WME_AC_TO_TID(_ac) (       \
++	((_ac) == WME_AC_VO) ? 6 : \
++	((_ac) == WME_AC_VI) ? 5 : \
++	((_ac) == WME_AC_BK) ? 1 : \
++	0)
++
++#define TID_TO_WME_AC(_tid) (      \
++	((_tid) < 1) ? WME_AC_BE : \
++	((_tid) < 3) ? WME_AC_BK : \
++	((_tid) < 6) ? WME_AC_VI : \
++	WME_AC_VO)
++
++/*
++ * WME Parameter Element
++ */
++
++struct ieee80211_wme_param {
++	u_int8_t param_id;
++	u_int8_t param_len;
++	u_int8_t param_oui[3];
++	u_int8_t param_oui_type;
++	u_int8_t param_oui_sybtype;
++	u_int8_t param_version;
++	u_int8_t param_qosInfo;
++	u_int8_t param_reserved;
++	struct ieee80211_wme_acparams	params_acParams[WME_NUM_AC];
++} __packed;
++
++/*
++ * WME U-APSD qos info field defines
++ */
++#define WME_CAPINFO_UAPSD_EN			0x00000080
++#define WME_CAPINFO_UAPSD_VO			0x00000001
++#define WME_CAPINFO_UAPSD_VI			0x00000002
++#define WME_CAPINFO_UAPSD_BK			0x00000004
++#define WME_CAPINFO_UAPSD_BE			0x00000008
++#define WME_CAPINFO_UAPSD_ACFLAGS_SHIFT		0
++#define WME_CAPINFO_UAPSD_ACFLAGS_MASK		0xF
++#define WME_CAPINFO_UAPSD_MAXSP_SHIFT		5
++#define WME_CAPINFO_UAPSD_MAXSP_MASK		0x3
++#define WME_CAPINFO_IE_OFFSET			8
++#define WME_UAPSD_MAXSP(_qosinfo) (((_qosinfo) >> WME_CAPINFO_UAPSD_MAXSP_SHIFT) & WME_CAPINFO_UAPSD_MAXSP_MASK)
++#define WME_UAPSD_AC_ENABLED(_ac, _qosinfo) ( (1<<(3 - (_ac))) &   \
++		(((_qosinfo) >> WME_CAPINFO_UAPSD_ACFLAGS_SHIFT) & WME_CAPINFO_UAPSD_ACFLAGS_MASK) )
++
++/*
++ * Atheros Advanced Capability information element.
++ */
++struct ieee80211_ie_athAdvCap {
++	u_int8_t athAdvCap_id;		/* IEEE80211_ELEMID_VENDOR */
++	u_int8_t athAdvCap_len;		/* length in bytes */
++	u_int8_t athAdvCap_oui[3];	/* 0x00, 0x03, 0x7f */
++	u_int8_t athAdvCap_type;		/* OUI type */
++	u_int8_t athAdvCap_subtype;	/* OUI subtype */
++	u_int8_t athAdvCap_version;	/* spec revision */
++	u_int8_t athAdvCap_capability;	/* Capability info */
++	u_int16_t athAdvCap_defKeyIndex;
++} __packed;
++
++/*
++ * Atheros XR information element.
++ */
++struct ieee80211_xr_param {
++	u_int8_t param_id;
++	u_int8_t param_len;
++	u_int8_t param_oui[3];
++	u_int8_t param_oui_type;
++	u_int8_t param_oui_sybtype;
++	u_int8_t param_version;
++	u_int8_t param_Info;
++	u_int8_t param_base_bssid[IEEE80211_ADDR_LEN];
++	u_int8_t param_xr_bssid[IEEE80211_ADDR_LEN];
++	u_int16_t param_xr_beacon_interval;
++	u_int8_t param_base_ath_capability;
++	u_int8_t param_xr_ath_capability;
++} __packed;
++
++/* Atheros capabilities */
++#define IEEE80211_ATHC_TURBOP	0x0001		/* Turbo Prime */
++#define IEEE80211_ATHC_COMP	0x0002		/* Compression */
++#define IEEE80211_ATHC_FF	0x0004		/* Fast Frames */
++#define IEEE80211_ATHC_XR	0x0008		/* Xtended Range support */
++#define IEEE80211_ATHC_AR	0x0010		/* Advanced Radar support */
++#define IEEE80211_ATHC_BURST	0x0020		/* Bursting - not negotiated */
++#define IEEE80211_ATHC_WME	0x0040		/* CWMin tuning */
++#define IEEE80211_ATHC_BOOST	0x0080		/* Boost */
++
++/*
++ * Management Notification Frame
++ */
++struct ieee80211_mnf {
++	u_int8_t mnf_category;
++	u_int8_t mnf_action;
++	u_int8_t mnf_dialog;
++	u_int8_t mnf_status;
++} __packed;
++#define	MNF_SETUP_REQ	0
++#define	MNF_SETUP_RESP	1
++#define	MNF_TEARDOWN	2
++
++/*
++ * Control frames.
++ */
++struct ieee80211_frame_min {
++	u_int8_t i_fc[2];
++	__le16 i_dur;
++	u_int8_t i_addr1[IEEE80211_ADDR_LEN];
++	u_int8_t i_addr2[IEEE80211_ADDR_LEN];
++	/* FCS */
++} __packed;
++
++struct ieee80211_frame_rts {
++	u_int8_t i_fc[2];
++	__le16 i_dur;
++	u_int8_t i_ra[IEEE80211_ADDR_LEN];
++	u_int8_t i_ta[IEEE80211_ADDR_LEN];
++	/* FCS */
++} __packed;
++
++struct ieee80211_frame_cts {
++	u_int8_t i_fc[2];
++	__le16 i_dur;
++	u_int8_t i_ra[IEEE80211_ADDR_LEN];
++	/* FCS */
++} __packed;
++
++struct ieee80211_frame_ack {
++	u_int8_t i_fc[2];
++	__le16 i_dur;
++	u_int8_t i_ra[IEEE80211_ADDR_LEN];
++	/* FCS */
++} __packed;
++
++struct ieee80211_frame_pspoll {
++	u_int8_t i_fc[2];
++	u_int8_t i_aid[2];
++	u_int8_t i_bssid[IEEE80211_ADDR_LEN];
++	u_int8_t i_ta[IEEE80211_ADDR_LEN];
++	/* FCS */
++} __packed;
++
++struct ieee80211_frame_cfend {		/* NB: also CF-End+CF-Ack */
++	u_int8_t i_fc[2];
++	__le16 i_dur;	/* should be zero */
++	u_int8_t i_ra[IEEE80211_ADDR_LEN];
++	u_int8_t i_bssid[IEEE80211_ADDR_LEN];
++	/* FCS */
++} __packed;
++
++/*
++ * BEACON management packets
++ *
++ *	octet timestamp[8]
++ *	octet beacon interval[2]
++ *	octet capability information[2]
++ *	information element
++ *		octet elemid
++ *		octet length
++ *		octet information[length]
++ */
++
++typedef u_int8_t *ieee80211_mgt_beacon_t;
++
++#define	IEEE80211_BEACON_INTERVAL(beacon) \
++	((beacon)[8] | ((beacon)[9] << 8))
++#define	IEEE80211_BEACON_CAPABILITY(beacon) \
++	((beacon)[10] | ((beacon)[11] << 8))
++
++#define	IEEE80211_CAPINFO_ESS			0x0001
++#define	IEEE80211_CAPINFO_IBSS			0x0002
++#define	IEEE80211_CAPINFO_CF_POLLABLE		0x0004
++#define	IEEE80211_CAPINFO_CF_POLLREQ		0x0008
++#define	IEEE80211_CAPINFO_PRIVACY		0x0010
++#define	IEEE80211_CAPINFO_SHORT_PREAMBLE	0x0020
++#define	IEEE80211_CAPINFO_PBCC			0x0040
++#define	IEEE80211_CAPINFO_CHNL_AGILITY		0x0080
++/* bits 8-9 are reserved (8 now for spectrum management) */
++#define IEEE80211_CAPINFO_SPECTRUM_MGMT		0x0100
++#define	IEEE80211_CAPINFO_SHORT_SLOTTIME	0x0400
++#define	IEEE80211_CAPINFO_RSN			0x0800
++/* bit 12 is reserved */
++#define	IEEE80211_CAPINFO_DSSSOFDM		0x2000
++/* bits 14-15 are reserved */
++
++/*
++ * 802.11i/WPA information element (maximally sized).
++ */
++struct ieee80211_ie_wpa {
++	u_int8_t wpa_id;			/* IEEE80211_ELEMID_VENDOR */
++	u_int8_t wpa_len;		/* length in bytes */
++	u_int8_t wpa_oui[3];		/* 0x00, 0x50, 0xf2 */
++	u_int8_t wpa_type;		/* OUI type */
++	u_int16_t wpa_version;		/* spec revision */
++	u_int32_t wpa_mcipher[1];	/* multicast/group key cipher */
++	u_int16_t wpa_uciphercnt;	/* # pairwise key ciphers */
++	u_int32_t wpa_uciphers[8];	/* ciphers */
++	u_int16_t wpa_authselcnt;	/* authentication selector cnt*/
++	u_int32_t wpa_authsels[8];	/* selectors */
++	u_int16_t wpa_caps;		/* 802.11i capabilities */
++	u_int16_t wpa_pmkidcnt;		/* 802.11i pmkid count */
++	u_int16_t wpa_pmkids[8];		/* 802.11i pmkids */
++} __packed;
++
++/*
++ * Management information element payloads.
++ */
++
++enum {
++	IEEE80211_ELEMID_SSID		= 0,
++	IEEE80211_ELEMID_RATES		= 1,
++	IEEE80211_ELEMID_FHPARMS	= 2,
++	IEEE80211_ELEMID_DSPARMS	= 3,
++	IEEE80211_ELEMID_CFPARMS	= 4,
++	IEEE80211_ELEMID_TIM		= 5,
++	IEEE80211_ELEMID_IBSSPARMS	= 6,
++	IEEE80211_ELEMID_COUNTRY	= 7,
++	IEEE80211_ELEMID_REQINFO	= 10,
++	IEEE80211_ELEMID_CHALLENGE	= 16,
++	/* 17-31 reserved for challenge text extension */
++	IEEE80211_ELEMID_PWRCNSTR	= 32,
++	IEEE80211_ELEMID_PWRCAP		= 33,
++	IEEE80211_ELEMID_TPCREQ		= 34,
++	IEEE80211_ELEMID_TPCREP		= 35,
++	IEEE80211_ELEMID_SUPPCHAN	= 36,
++	IEEE80211_ELEMID_CHANSWITCHANN	= 37,
++	IEEE80211_ELEMID_MEASREQ	= 38,
++	IEEE80211_ELEMID_MEASREP	= 39,
++	IEEE80211_ELEMID_QUIET		= 40,
++	IEEE80211_ELEMID_IBSSDFS	= 41,
++	IEEE80211_ELEMID_ERP		= 42,
++	IEEE80211_ELEMID_RSN		= 48,
++	IEEE80211_ELEMID_XRATES		= 50,
++	/* 128-129 proprietary elements used by Agere chipsets */
++	IEEE80211_ELEMID_AGERE1		= 128,
++	IEEE80211_ELEMID_AGERE2		= 129,
++	IEEE80211_ELEMID_TPC		= 150,
++	IEEE80211_ELEMID_CCKM		= 156,
++	IEEE80211_ELEMID_VENDOR		= 221,	/* vendor private */
++};
++
++#define IEEE80211_CHANSWITCHANN_BYTES 5
++
++#if 0 //rtk_nl80211
++struct ieee80211_tim_ie {
++	u_int8_t	tim_ie;			/* IEEE80211_ELEMID_TIM */
++	u_int8_t	tim_len;
++	u_int8_t	tim_count;		/* DTIM count */
++	u_int8_t	tim_period;		/* DTIM period */
++	u_int8_t	tim_bitctl;		/* bitmap control */
++	u_int8_t	tim_bitmap[1];		/* variable-length bitmap */
++} __packed;
++#endif
++
++struct ieee80211_country_ie {
++	u_int8_t	ie;			/* IEEE80211_ELEMID_COUNTRY */
++	u_int8_t	len;
++	u_int8_t	cc[3];			/* ISO CC+(I)ndoor/(O)utdoor */
++	struct {
++		u_int8_t schan;			/* starting channel */
++		u_int8_t nchan;			/* number channels */
++		u_int8_t maxtxpwr;		/* tx power cap */
++	} __packed band[4];			/* up to 4 sub bands */
++} __packed;
++
++#define IEEE80211_CHALLENGE_LEN		128
++
++#define IEEE80211_SUPPCHAN_LEN		26
++
++#define	IEEE80211_RATE_BASIC		0x80
++#define	IEEE80211_RATE_VAL		0x7f
++
++/* EPR information element flags */
++#define	IEEE80211_ERP_NON_ERP_PRESENT	0x01
++#define	IEEE80211_ERP_USE_PROTECTION	0x02
++#define	IEEE80211_ERP_LONG_PREAMBLE	0x04
++
++/* Atheros private advanced capabilities info */
++#define	ATHEROS_CAP_TURBO_PRIME		0x01
++#define	ATHEROS_CAP_COMPRESSION		0x02
++#define	ATHEROS_CAP_FAST_FRAME		0x04
++/* bits 3-6 reserved */
++#define	ATHEROS_CAP_BOOST		0x80
++
++#define	ATH_OUI			0x7f0300		/* Atheros OUI */
++#define	ATH_OUI_TYPE		0x01
++#define	ATH_OUI_SUBTYPE		0x01
++#define ATH_OUI_VERSION		0x00
++#define	ATH_OUI_TYPE_XR		0x03
++#define	ATH_OUI_VER_XR		0x01
++
++#define	WPA_OUI			0xf25000
++#define	WPA_OUI_TYPE		0x01
++#define	WPA_VERSION		1		/* current supported version */
++
++#define	WPA_CSE_NULL		0x00
++#define	WPA_CSE_WEP40		0x01
++#define	WPA_CSE_TKIP		0x02
++#define	WPA_CSE_CCMP		0x04
++#define	WPA_CSE_WEP104		0x05
++
++#define	WPA_ASE_NONE		0x00
++#define	WPA_ASE_8021X_UNSPEC	0x01
++#define	WPA_ASE_8021X_PSK	0x02
++
++#define	RSN_OUI			0xac0f00
++#define	RSN_VERSION		1		/* current supported version */
++
++#define	RSN_CSE_NULL		0x00
++#define	RSN_CSE_WEP40		0x01
++#define	RSN_CSE_TKIP		0x02
++#define	RSN_CSE_WRAP		0x03
++#define	RSN_CSE_CCMP		0x04
++#define	RSN_CSE_WEP104		0x05
++
++#define	RSN_ASE_NONE		0x00
++#define	RSN_ASE_8021X_UNSPEC	0x01
++#define	RSN_ASE_8021X_PSK	0x02
++
++#define	RSN_CAP_PREAUTH		0x01
++
++#define	WME_OUI			0xf25000
++#define	WME_OUI_TYPE		0x02
++#define	WME_INFO_OUI_SUBTYPE	0x00
++#define	WME_PARAM_OUI_SUBTYPE	0x01
++#define	WME_VERSION		1
++
++/* WME stream classes */
++#define	WME_AC_BE	0		/* best effort */
++#define	WME_AC_BK	1		/* background */
++#define	WME_AC_VI	2		/* video */
++#define	WME_AC_VO	3		/* voice */
++
++/*
++ * AUTH management packets
++ *
++ *	octet algo[2]
++ *	octet seq[2]
++ *	octet status[2]
++ *	octet chal.id
++ *	octet chal.length
++ *	octet chal.text[253]
++ */
++
++typedef u_int8_t *ieee80211_mgt_auth_t;
++
++#define	IEEE80211_AUTH_ALGORITHM(auth) \
++	((auth)[0] | ((auth)[1] << 8))
++#define	IEEE80211_AUTH_TRANSACTION(auth) \
++	((auth)[2] | ((auth)[3] << 8))
++#define	IEEE80211_AUTH_STATUS(auth) \
++	((auth)[4] | ((auth)[5] << 8))
++
++#define	IEEE80211_AUTH_ALG_OPEN		0x0000
++#define	IEEE80211_AUTH_ALG_SHARED	0x0001
++#define	IEEE80211_AUTH_ALG_LEAP		0x0080
++
++enum {
++	IEEE80211_AUTH_OPEN_REQUEST		= 1,
++	IEEE80211_AUTH_OPEN_RESPONSE		= 2,
++};
++
++enum {
++	IEEE80211_AUTH_SHARED_REQUEST		= 1,
++	IEEE80211_AUTH_SHARED_CHALLENGE		= 2,
++	IEEE80211_AUTH_SHARED_RESPONSE		= 3,
++	IEEE80211_AUTH_SHARED_PASS		= 4,
++};
++
++/*
++ * Reason codes
++ *
++ * Unlisted codes are reserved
++ */
++
++enum {
++	IEEE80211_REASON_UNSPECIFIED		= 1,
++	IEEE80211_REASON_AUTH_EXPIRE		= 2,
++	IEEE80211_REASON_AUTH_LEAVE		= 3,
++	IEEE80211_REASON_ASSOC_EXPIRE		= 4,
++	IEEE80211_REASON_ASSOC_TOOMANY		= 5,
++	IEEE80211_REASON_NOT_AUTHED		= 6,
++	IEEE80211_REASON_NOT_ASSOCED		= 7,
++	IEEE80211_REASON_ASSOC_LEAVE		= 8,
++	IEEE80211_REASON_ASSOC_NOT_AUTHED	= 9,
++
++	IEEE80211_REASON_RSN_REQUIRED		= 11,
++	IEEE80211_REASON_RSN_INCONSISTENT	= 12,
++	IEEE80211_REASON_IE_INVALID		= 13,
++	IEEE80211_REASON_MIC_FAILURE		= 14,
++
++	IEEE80211_STATUS_SUCCESS		= 0,
++	IEEE80211_STATUS_UNSPECIFIED		= 1,
++	IEEE80211_STATUS_CAPINFO		= 10,
++	IEEE80211_STATUS_NOT_ASSOCED		= 11,
++	IEEE80211_STATUS_OTHER			= 12,
++	IEEE80211_STATUS_ALG			= 13,
++	IEEE80211_STATUS_SEQUENCE		= 14,
++	IEEE80211_STATUS_CHALLENGE		= 15,
++	IEEE80211_STATUS_TIMEOUT		= 16,
++	IEEE80211_STATUS_TOOMANY		= 17,
++	IEEE80211_STATUS_BASIC_RATE		= 18,
++	IEEE80211_STATUS_SP_REQUIRED		= 19,
++	IEEE80211_STATUS_PBCC_REQUIRED		= 20,
++	IEEE80211_STATUS_CA_REQUIRED		= 21,
++	IEEE80211_STATUS_TOO_MANY_STATIONS	= 22,
++	IEEE80211_STATUS_RATES			= 23,
++	IEEE80211_STATUS_SHORTSLOT_REQUIRED	= 25,
++	IEEE80211_STATUS_DSSSOFDM_REQUIRED	= 26,
++};
++
++#define	IEEE80211_WEP_KEYLEN		5	/* 40bit */
++#define	IEEE80211_WEP_IVLEN		3	/* 24bit */
++#define	IEEE80211_WEP_KIDLEN		1	/* 1 octet */
++#define	IEEE80211_WEP_CRCLEN		4	/* CRC-32 */
++#define	IEEE80211_WEP_NKID		4	/* number of key ids */
++
++/*
++ * 802.11i defines an extended IV for use with non-WEP ciphers.
++ * When the EXTIV bit is set in the key id byte an additional
++ * 4 bytes immediately follow the IV for TKIP.  For CCMP the
++ * EXTIV bit is likewise set but the 8 bytes represent the
++ * CCMP header rather than IV+extended-IV.
++ */
++#define	IEEE80211_WEP_EXTIV		0x20
++#define	IEEE80211_WEP_EXTIVLEN		4	/* extended IV length */
++#define	IEEE80211_WEP_MICLEN		8	/* trailing MIC */
++
++#define	IEEE80211_CRC_LEN		4
++
++/*
++ * Maximum acceptable MTU is:
++ *	IEEE80211_MAX_LEN - WEP overhead - CRC -
++ *		QoS overhead - RSN/WPA overhead
++ * Min is arbitrarily chosen > IEEE80211_MIN_LEN.  The default
++ * mtu is Ethernet-compatible; it's set by ether_ifattach.
++ */
++#define	IEEE80211_MTU_MAX		2290
++#define	IEEE80211_MTU_MIN		32
++
++#define	IEEE80211_MAX_LEN		(2300 + IEEE80211_CRC_LEN + \
++    (IEEE80211_WEP_IVLEN + IEEE80211_WEP_KIDLEN + IEEE80211_WEP_CRCLEN))
++#define	IEEE80211_ACK_LEN \
++	(sizeof(struct ieee80211_frame_ack) + IEEE80211_CRC_LEN)
++#define	IEEE80211_MIN_LEN \
++	(sizeof(struct ieee80211_frame_min) + IEEE80211_CRC_LEN)
++
++/*
++ * The 802.11 spec says at most 2007 stations may be
++ * associated at once.  For most AP's this is way more
++ * than is feasible so we use a default of 128.  This
++ * number may be overridden by the driver and/or by
++ * user configuration.
++ */
++#define	IEEE80211_AID_MAX		2007
++#define	IEEE80211_AID_DEF		128
++
++#define	IEEE80211_AID(b)	((b) &~ 0xc000)
++
++/* 
++ * RTS frame length parameters.  The default is specified in
++ * the 802.11 spec.  The max may be wrong for jumbo frames.
++ */
++#define	IEEE80211_RTS_DEFAULT		512
++#define	IEEE80211_RTS_MIN		1
++#define	IEEE80211_RTS_MAX		2346
++
++/* 
++ * Regulatory extension identifier for country IE.
++ */
++#define IEEE80211_REG_EXT_ID		201
++
++/*
++ * IEEE 802.11 timer synchronization function (TSF) timestamp length
++ */
++#define IEEE80211_TSF_LEN		8
++
++#endif /* _NET80211_IEEE80211_H_ */
+--- /dev/null
++++ b/include/net80211/_ieee80211.h
+@@ -0,0 +1,249 @@
++/*-
++ * Copyright (c) 2001 Atsushi Onoe
++ * Copyright (c) 2002-2005 Sam Leffler, Errno Consulting
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The name of the author may not be used to endorse or promote products
++ *    derived from this software without specific prior written permission.
++ *
++ * Alternatively, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2 as published by the Free
++ * Software Foundation.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ * $Id: _ieee80211.h 2749 2007-10-16 08:58:14Z kelmo $
++ */
++#ifndef _NET80211__IEEE80211_H_
++#define _NET80211__IEEE80211_H_
++
++enum ieee80211_phytype {
++	IEEE80211_T_DS,			/* direct sequence spread spectrum */
++	IEEE80211_T_FH,			/* frequency hopping */
++	IEEE80211_T_OFDM,		/* frequency division multiplexing */
++	IEEE80211_T_TURBO,		/* high rate OFDM, aka turbo mode */
++};
++#define	IEEE80211_T_CCK	IEEE80211_T_DS	/* more common nomenclature */
++
++/* XXX not really a mode; there are really multiple PHY's */
++enum ieee80211_phymode {
++	IEEE80211_MODE_AUTO	= 0,	/* autoselect */
++	IEEE80211_MODE_11A	= 1,	/* 5GHz, OFDM */
++	IEEE80211_MODE_11B	= 2,	/* 2GHz, CCK */
++	IEEE80211_MODE_11G	= 3,	/* 2GHz, OFDM */
++	IEEE80211_MODE_FH	= 4,	/* 2GHz, GFSK */
++	IEEE80211_MODE_TURBO_A	= 5,	/* 5GHz, OFDM, 2x clock dynamic turbo */
++	IEEE80211_MODE_TURBO_G	= 6,	/* 2GHz, OFDM, 2x clock  dynamic turbo*/
++};
++#define	IEEE80211_MODE_MAX	(IEEE80211_MODE_TURBO_G+1)
++
++enum ieee80211_opmode {
++	IEEE80211_M_STA		= 1,	/* infrastructure station */
++	IEEE80211_M_IBSS 	= 0,	/* IBSS (adhoc) station */
++	IEEE80211_M_AHDEMO	= 3,	/* Old lucent compatible adhoc demo */
++	IEEE80211_M_HOSTAP	= 6,	/* Software Access Point */
++	IEEE80211_M_MONITOR	= 8,	/* Monitor mode */
++	IEEE80211_M_WDS		= 2	/* WDS link */
++};
++
++/*
++ * 802.11g protection mode.
++ */
++enum ieee80211_protmode {
++	IEEE80211_PROT_NONE	= 0,	/* no protection */
++	IEEE80211_PROT_CTSONLY	= 1,	/* CTS to self */
++	IEEE80211_PROT_RTSCTS	= 2,	/* RTS-CTS */
++};
++
++/*
++ * Authentication mode.
++ */
++enum ieee80211_authmode {
++	IEEE80211_AUTH_NONE	= 0,
++	IEEE80211_AUTH_OPEN	= 1,	/* open */
++	IEEE80211_AUTH_SHARED	= 2,	/* shared-key */
++	IEEE80211_AUTH_8021X	= 3,	/* 802.1x */
++	IEEE80211_AUTH_AUTO	= 4,	/* auto-select/accept */
++	/* NB: these are used only for ioctls */
++	IEEE80211_AUTH_WPA	= 5,	/* WPA/RSN w/ 802.1x/PSK */
++};
++
++/*
++ * Roaming mode is effectively who controls the operation
++ * of the 802.11 state machine when operating as a station.
++ * State transitions are controlled either by the driver
++ * (typically when management frames are processed by the
++ * hardware/firmware), the host (auto/normal operation of
++ * the 802.11 layer), or explicitly through ioctl requests
++ * when applications like wpa_supplicant want control.
++ */
++enum ieee80211_roamingmode {
++	IEEE80211_ROAMING_DEVICE= 0,	/* driver/hardware control */
++	IEEE80211_ROAMING_AUTO	= 1,	/* 802.11 layer control */
++	IEEE80211_ROAMING_MANUAL= 2,	/* application control */
++};
++
++/*
++ * Scanning mode controls station scanning work; this is
++ * used only when roaming mode permits the host to select
++ * the bss to join/channel to use.
++ */
++enum ieee80211_scanmode {
++	IEEE80211_SCAN_DEVICE	= 0,	/* driver/hardware control */
++	IEEE80211_SCAN_BEST	= 1,	/* 802.11 layer selects best */
++	IEEE80211_SCAN_FIRST	= 2,	/* take first suitable candidate */
++};
++
++/*
++ * Channels are specified by frequency and attributes.
++ */
++
++#if 0 //rtk_nl80211
++struct ieee80211_channel {
++	u_int16_t ic_freq;	/* setting in Mhz */
++	u_int16_t ic_flags;	/* see below */
++	u_int8_t ic_ieee;	/* IEEE channel number */
++	int8_t ic_maxregpower;	/* maximum regulatory tx power in dBm */
++	int8_t ic_maxpower;	/* maximum tx power in dBm */
++	int8_t ic_minpower;	/* minimum tx power in dBm */
++};
++#endif
++
++#define	IEEE80211_CHAN_MAX	255
++#define	IEEE80211_CHAN_BYTES	32	/* howmany(IEEE80211_CHAN_MAX, NBBY) */
++#define	IEEE80211_CHAN_ANY	0xffff	/* token for ``any channel'' */
++#define	IEEE80211_CHAN_ANYC 	((struct ieee80211_channel *) IEEE80211_CHAN_ANY)
++
++#define	IEEE80211_RADAR_11HCOUNT		1
++#define IEEE80211_DEFAULT_CHANCHANGE_TBTT_COUNT	3
++#define	IEEE80211_RADAR_TEST_MUTE_CHAN	36	/* Move to channel 36 for mute test */
++
++/* bits 0-3 are for private use by drivers */
++/* channel attributes */
++#define	IEEE80211_CHAN_TURBO	0x0010	/* Turbo channel */
++#define	IEEE80211_CHAN_CCK	0x0020	/* CCK channel */
++#define	IEEE80211_CHAN_OFDM	0x0040	/* OFDM channel */
++#define	IEEE80211_CHAN_2GHZ	0x0080	/* 2 GHz spectrum channel. */
++#define	IEEE80211_CHAN_5GHZ	0x0100	/* 5 GHz spectrum channel */
++#define	IEEE80211_CHAN_PASSIVE	0x0200	/* Only passive scan allowed */
++#define	IEEE80211_CHAN_DYN	0x0400	/* Dynamic CCK-OFDM channel */
++#define	IEEE80211_CHAN_GFSK	0x0800	/* GFSK channel (FHSS PHY) */
++#define IEEE80211_CHAN_RADAR	0x1000	/* Radar found on channel */
++#define	IEEE80211_CHAN_STURBO	0x2000	/* 11a static turbo channel only */
++#define	IEEE80211_CHAN_HALF	0x4000	/* Half rate channel */
++#define	IEEE80211_CHAN_QUARTER	0x8000	/* Quarter rate channel */
++
++/*
++ * Useful combinations of channel characteristics.
++ */
++#define	IEEE80211_CHAN_FHSS \
++	(IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_GFSK)
++#define	IEEE80211_CHAN_A \
++	(IEEE80211_CHAN_5GHZ | IEEE80211_CHAN_OFDM)
++#define	IEEE80211_CHAN_B \
++	(IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_CCK)
++#define	IEEE80211_CHAN_PUREG \
++	(IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_OFDM)
++#define	IEEE80211_CHAN_G \
++	(IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_DYN)
++#define IEEE80211_CHAN_108A \
++	(IEEE80211_CHAN_5GHZ | IEEE80211_CHAN_OFDM | IEEE80211_CHAN_TURBO)
++#define	IEEE80211_CHAN_108G \
++	(IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_OFDM | IEEE80211_CHAN_TURBO)
++#define	IEEE80211_CHAN_ST \
++	(IEEE80211_CHAN_108A | IEEE80211_CHAN_STURBO)
++
++#define	IEEE80211_CHAN_ALL \
++	(IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ | IEEE80211_CHAN_GFSK | \
++	 IEEE80211_CHAN_CCK | IEEE80211_CHAN_OFDM | IEEE80211_CHAN_DYN)
++#define	IEEE80211_CHAN_ALLTURBO \
++	(IEEE80211_CHAN_ALL | IEEE80211_CHAN_TURBO | IEEE80211_CHAN_STURBO)
++
++#define	IEEE80211_IS_CHAN_FHSS(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_FHSS) == IEEE80211_CHAN_FHSS)
++#define	IEEE80211_IS_CHAN_A(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_A) == IEEE80211_CHAN_A)
++#define	IEEE80211_IS_CHAN_B(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_B) == IEEE80211_CHAN_B)
++#define	IEEE80211_IS_CHAN_PUREG(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_PUREG) == IEEE80211_CHAN_PUREG)
++#define	IEEE80211_IS_CHAN_G(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_G) == IEEE80211_CHAN_G)
++#define	IEEE80211_IS_CHAN_ANYG(_c) \
++	(IEEE80211_IS_CHAN_PUREG(_c) || IEEE80211_IS_CHAN_G(_c))
++#define	IEEE80211_IS_CHAN_ST(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_ST) == IEEE80211_CHAN_ST)
++#define	IEEE80211_IS_CHAN_108A(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_108A) == IEEE80211_CHAN_108A)
++#define	IEEE80211_IS_CHAN_108G(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_108G) == IEEE80211_CHAN_108G)
++
++#define	IEEE80211_IS_CHAN_2GHZ(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_2GHZ) != 0)
++#define	IEEE80211_IS_CHAN_5GHZ(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_5GHZ) != 0)
++#define	IEEE80211_IS_CHAN_OFDM(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_OFDM) != 0)
++#define	IEEE80211_IS_CHAN_CCK(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_CCK) != 0)
++#define	IEEE80211_IS_CHAN_GFSK(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_GFSK) != 0)
++#define	IEEE80211_IS_CHAN_TURBO(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_TURBO) != 0)
++#define	IEEE80211_IS_CHAN_STURBO(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_STURBO) != 0)
++#define	IEEE80211_IS_CHAN_DTURBO(_c) \
++	(((_c)->ic_flags & \
++	(IEEE80211_CHAN_TURBO | IEEE80211_CHAN_STURBO)) == IEEE80211_CHAN_TURBO)
++#define	IEEE80211_IS_CHAN_HALF(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_HALF) != 0)
++#define	IEEE80211_IS_CHAN_QUARTER(_c) \
++	(((_c)->ic_flags & IEEE80211_CHAN_QUARTER) != 0)
++
++/* ni_chan encoding for FH phy */
++#define	IEEE80211_FH_CHANMOD		80
++#define	IEEE80211_FH_CHAN(set,pat)	(((set) - 1) * IEEE80211_FH_CHANMOD + (pat))
++#define	IEEE80211_FH_CHANSET(chan)	((chan) / IEEE80211_FH_CHANMOD + 1)
++#define	IEEE80211_FH_CHANPAT(chan)	((chan) % IEEE80211_FH_CHANMOD)
++
++/*
++ * 802.11 rate set.
++ */
++#define	IEEE80211_RATE_SIZE	8		/* 802.11 standard */
++#define	IEEE80211_RATE_MAXSIZE	15		/* max rates we'll handle */
++#define	IEEE80211_SANITISE_RATESIZE(_rsz) \
++	((_rsz > IEEE80211_RATE_MAXSIZE) ? IEEE80211_RATE_MAXSIZE : _rsz)
++
++struct ieee80211_rateset {
++	u_int8_t rs_nrates;
++	u_int8_t rs_rates[IEEE80211_RATE_MAXSIZE];
++};
++
++struct ieee80211_roam {
++	int8_t rssi11a;		/* rssi thresh for 11a bss */
++	int8_t rssi11b;		/* for 11g sta in 11b bss */
++	int8_t rssi11bOnly;	/* for 11b sta */
++	u_int8_t pad1;
++	u_int8_t rate11a;	/* rate thresh for 11a bss */
++	u_int8_t rate11b;	/* for 11g sta in 11b bss */
++	u_int8_t rate11bOnly;	/* for 11b sta */
++	u_int8_t pad2;
++};
++#endif /* _NET80211__IEEE80211_H_ */
+--- /dev/null
++++ b/include/net80211/ieee80211_ioctl.h
+@@ -0,0 +1,790 @@
++/*-
++ * Copyright (c) 2001 Atsushi Onoe
++ * Copyright (c) 2002-2005 Sam Leffler, Errno Consulting
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The name of the author may not be used to endorse or promote products
++ *    derived from this software without specific prior written permission.
++ *
++ * Alternatively, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2 as published by the Free
++ * Software Foundation.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ * $Id: ieee80211_ioctl.h 3313 2008-01-30 21:07:22Z proski $
++ */
++#ifndef _NET80211_IEEE80211_IOCTL_H_
++#define _NET80211_IEEE80211_IOCTL_H_
++
++/*
++ * IEEE 802.11 ioctls.
++ */
++#include <net80211/_ieee80211.h>
++#include <net80211/ieee80211.h>
++#include <net80211/ieee80211_crypto.h>
++
++/*
++ * Per/node (station) statistics available when operating as an AP.
++ */
++struct ieee80211_nodestats {
++	u_int32_t ns_rx_data;		/* rx data frames */
++	u_int32_t ns_rx_mgmt;		/* rx management frames */
++	u_int32_t ns_rx_ctrl;		/* rx control frames */
++	u_int32_t ns_rx_ucast;		/* rx unicast frames */
++	u_int32_t ns_rx_mcast;		/* rx multi/broadcast frames */
++	u_int64_t ns_rx_bytes;		/* rx data count (bytes) */
++	u_int64_t ns_rx_beacons;		/* rx beacon frames */
++	u_int32_t ns_rx_proberesp;	/* rx probe response frames */
++
++	u_int32_t ns_rx_dup;		/* rx discard because it's a dup */
++	u_int32_t ns_rx_noprivacy;	/* rx w/ wep but privacy off */
++	u_int32_t ns_rx_wepfail;		/* rx wep processing failed */
++	u_int32_t ns_rx_demicfail;	/* rx demic failed */
++	u_int32_t ns_rx_decap;		/* rx decapsulation failed */
++	u_int32_t ns_rx_defrag;		/* rx defragmentation failed */
++	u_int32_t ns_rx_disassoc;	/* rx disassociation */
++	u_int32_t ns_rx_deauth;		/* rx deauthentication */
++	u_int32_t ns_rx_decryptcrc;	/* rx decrypt failed on crc */
++	u_int32_t ns_rx_unauth;		/* rx on unauthorized port */
++	u_int32_t ns_rx_unencrypted;	/* rx unecrypted w/ privacy */
++
++	u_int32_t ns_tx_data;		/* tx data frames */
++	u_int32_t ns_tx_mgmt;		/* tx management frames */
++	u_int32_t ns_tx_ucast;		/* tx unicast frames */
++	u_int32_t ns_tx_mcast;		/* tx multi/broadcast frames */
++	u_int64_t ns_tx_bytes;		/* tx data count (bytes) */
++	u_int32_t ns_tx_probereq;	/* tx probe request frames */
++	u_int32_t ns_tx_uapsd;		/* tx on uapsd queue */
++
++	u_int32_t ns_tx_novlantag;	/* tx discard due to no tag */
++	u_int32_t ns_tx_vlanmismatch;	/* tx discard due to of bad tag */
++
++	u_int32_t ns_tx_eosplost;	/* uapsd EOSP retried out */
++
++	u_int32_t ns_ps_discard;		/* ps discard due to of age */
++
++	u_int32_t ns_uapsd_triggers;	/* uapsd triggers */
++
++	/* MIB-related state */
++	u_int32_t ns_tx_assoc;		/* [re]associations */
++	u_int32_t ns_tx_assoc_fail;	/* [re]association failures */
++	u_int32_t ns_tx_auth;		/* [re]authentications */
++	u_int32_t ns_tx_auth_fail;	/* [re]authentication failures*/
++	u_int32_t ns_tx_deauth;		/* deauthentications */
++	u_int32_t ns_tx_deauth_code;	/* last deauth reason */
++	u_int32_t ns_tx_disassoc;	/* disassociations */
++	u_int32_t ns_tx_disassoc_code;	/* last disassociation reason */
++	u_int32_t ns_psq_drops;		/* power save queue drops */
++};
++
++/*
++ * Summary statistics.
++ */
++struct ieee80211_stats {
++	u_int32_t is_rx_badversion;	/* rx frame with bad version */
++	u_int32_t is_rx_tooshort;	/* rx frame too short */
++	u_int32_t is_rx_wrongbss;	/* rx from wrong bssid */
++	u_int32_t is_rx_dup;		/* rx discard due to it's a dup */
++	u_int32_t is_rx_wrongdir;	/* rx w/ wrong direction */
++	u_int32_t is_rx_mcastecho;	/* rx discard due to of mcast echo */
++	u_int32_t is_rx_notassoc;	/* rx discard due to sta !assoc */
++	u_int32_t is_rx_noprivacy;	/* rx w/ wep but privacy off */
++	u_int32_t is_rx_unencrypted;	/* rx w/o wep and privacy on */
++	u_int32_t is_rx_wepfail;		/* rx wep processing failed */
++	u_int32_t is_rx_decap;		/* rx decapsulation failed */
++	u_int32_t is_rx_mgtdiscard;	/* rx discard mgt frames */
++	u_int32_t is_rx_ctl;		/* rx discard ctrl frames */
++	u_int32_t is_rx_beacon;		/* rx beacon frames */
++	u_int32_t is_rx_rstoobig;	/* rx rate set truncated */
++	u_int32_t is_rx_elem_missing;	/* rx required element missing*/
++	u_int32_t is_rx_elem_toobig;	/* rx element too big */
++	u_int32_t is_rx_elem_toosmall;	/* rx element too small */
++	u_int32_t is_rx_elem_unknown;	/* rx element unknown */
++	u_int32_t is_rx_badchan;		/* rx frame w/ invalid chan */
++	u_int32_t is_rx_chanmismatch;	/* rx frame chan mismatch */
++	u_int32_t is_rx_nodealloc;	/* rx frame dropped */
++	u_int32_t is_rx_ssidmismatch;	/* rx frame ssid mismatch  */
++	u_int32_t is_rx_auth_unsupported;/* rx w/ unsupported auth alg */
++	u_int32_t is_rx_auth_fail;	/* rx sta auth failure */
++	u_int32_t is_rx_auth_countermeasures;/* rx auth discard due to CM */
++	u_int32_t is_rx_assoc_bss;	/* rx assoc from wrong bssid */
++	u_int32_t is_rx_assoc_notauth;	/* rx assoc w/o auth */
++	u_int32_t is_rx_assoc_capmismatch;/* rx assoc w/ cap mismatch */
++	u_int32_t is_rx_assoc_norate;	/* rx assoc w/ no rate match */
++	u_int32_t is_rx_assoc_badwpaie;	/* rx assoc w/ bad WPA IE */
++	u_int32_t is_rx_deauth;		/* rx deauthentication */
++	u_int32_t is_rx_disassoc;	/* rx disassociation */
++	u_int32_t is_rx_badsubtype;	/* rx frame w/ unknown subtype*/
++	u_int32_t is_rx_nobuf;		/* rx failed for lack of buf */
++	u_int32_t is_rx_decryptcrc;	/* rx decrypt failed on crc */
++	u_int32_t is_rx_ahdemo_mgt;	/* rx discard ahdemo mgt frame*/
++	u_int32_t is_rx_bad_auth;	/* rx bad auth request */
++	u_int32_t is_rx_unauth;		/* rx on unauthorized port */
++	u_int32_t is_rx_badkeyid;	/* rx w/ incorrect keyid */
++	u_int32_t is_rx_ccmpreplay;	/* rx seq# violation (CCMP) */
++	u_int32_t is_rx_ccmpformat;	/* rx format bad (CCMP) */
++	u_int32_t is_rx_ccmpmic;		/* rx MIC check failed (CCMP) */
++	u_int32_t is_rx_tkipreplay;	/* rx seq# violation (TKIP) */
++	u_int32_t is_rx_tkipformat;	/* rx format bad (TKIP) */
++	u_int32_t is_rx_tkipmic;		/* rx MIC check failed (TKIP) */
++	u_int32_t is_rx_tkipicv;		/* rx ICV check failed (TKIP) */
++	u_int32_t is_rx_badcipher;	/* rx failed due to of key type */
++	u_int32_t is_rx_nocipherctx;	/* rx failed due to key !setup */
++	u_int32_t is_rx_acl;		/* rx discard due to of acl policy */
++	u_int32_t is_rx_ffcnt;		/* rx fast frames */
++	u_int32_t is_rx_badathtnl;   	/* driver key alloc failed */
++	u_int32_t is_tx_nobuf;		/* tx failed for lack of buf */
++	u_int32_t is_tx_nonode;		/* tx failed for no node */
++	u_int32_t is_tx_unknownmgt;	/* tx of unknown mgt frame */
++	u_int32_t is_tx_badcipher;	/* tx failed due to of key type */
++	u_int32_t is_tx_nodefkey;	/* tx failed due to no defkey */
++	u_int32_t is_tx_noheadroom;	/* tx failed due to no space */
++	u_int32_t is_tx_ffokcnt;		/* tx fast frames sent success */
++	u_int32_t is_tx_fferrcnt;	/* tx fast frames sent success */
++	u_int32_t is_scan_active;	/* active scans started */
++	u_int32_t is_scan_passive;	/* passive scans started */
++	u_int32_t is_node_timeout;	/* nodes timed out inactivity */
++	u_int32_t is_crypto_nomem;	/* no memory for crypto ctx */
++	u_int32_t is_crypto_tkip;	/* tkip crypto done in s/w */
++	u_int32_t is_crypto_tkipenmic;	/* tkip en-MIC done in s/w */
++	u_int32_t is_crypto_tkipdemic;	/* tkip de-MIC done in s/w */
++	u_int32_t is_crypto_tkipcm;	/* tkip counter measures */
++	u_int32_t is_crypto_ccmp;	/* ccmp crypto done in s/w */
++	u_int32_t is_crypto_wep;		/* wep crypto done in s/w */
++	u_int32_t is_crypto_setkey_cipher;/* cipher rejected key */
++	u_int32_t is_crypto_setkey_nokey;/* no key index for setkey */
++	u_int32_t is_crypto_delkey;	/* driver key delete failed */
++	u_int32_t is_crypto_badcipher;	/* unknown cipher */
++	u_int32_t is_crypto_nocipher;	/* cipher not available */
++	u_int32_t is_crypto_attachfail;	/* cipher attach failed */
++	u_int32_t is_crypto_swfallback;	/* cipher fallback to s/w */
++	u_int32_t is_crypto_keyfail;	/* driver key alloc failed */
++	u_int32_t is_crypto_enmicfail;	/* en-MIC failed */
++	u_int32_t is_ibss_capmismatch;	/* merge failed-cap mismatch */
++	u_int32_t is_ibss_norate;	/* merge failed-rate mismatch */
++	u_int32_t is_ps_unassoc;		/* ps-poll for unassoc. sta */
++	u_int32_t is_ps_badaid;		/* ps-poll w/ incorrect aid */
++	u_int32_t is_ps_qempty;		/* ps-poll w/ nothing to send */
++};
++
++/*
++ * Max size of optional information elements.  We artificially
++ * constrain this; it's limited only by the max frame size (and
++ * the max parameter size of the wireless extensions).
++ */
++#define	IEEE80211_MAX_OPT_IE	256
++
++/*
++ * WPA/RSN get/set key request.  Specify the key/cipher
++ * type and whether the key is to be used for sending and/or
++ * receiving.  The key index should be set only when working
++ * with global keys (use IEEE80211_KEYIX_NONE for ``no index'').
++ * Otherwise a unicast/pairwise key is specified by the bssid
++ * (on a station) or mac address (on an ap).  They key length
++ * must include any MIC key data; otherwise it should be no
++ more than IEEE80211_KEYBUF_SIZE.
++ */
++#pragma pack(1)
++
++struct ieee80211req_key {
++	u_int8_t ik_type;		/* key/cipher type */
++	u_int8_t ik_pad;
++	u_int16_t ik_keyix;		/* key index */
++	u_int8_t ik_keylen;		/* key length in bytes */
++	u_int8_t ik_flags;
++/* NB: IEEE80211_KEY_XMIT and IEEE80211_KEY_RECV defined elsewhere */
++#define	IEEE80211_KEY_DEFAULT	0x80	/* default xmit key */
++	u_int8_t ik_macaddr[IEEE80211_ADDR_LEN];
++	u_int64_t ik_keyrsc;		/* key receive sequence counter */ //RTK_WPAS WIFI_WPAS
++	//u_int64_t ik_keytsc;		/* key transmit sequence counter */
++	u_int8_t ik_keydata[IEEE80211_KEYBUF_SIZE+IEEE80211_MICBUF_SIZE];
++};
++
++#pragma pack()
++
++
++/*
++ * Delete a key either by index or address.  Set the index
++ * to IEEE80211_KEYIX_NONE when deleting a unicast key.
++ */
++struct ieee80211req_del_key {
++	u_int8_t idk_keyix;		/* key index */
++	u_int8_t idk_macaddr[IEEE80211_ADDR_LEN];
++};
++
++/*
++ * MLME state manipulation request.  IEEE80211_MLME_ASSOC
++ * only makes sense when operating as a station.  The other
++ * requests can be used when operating as a station or an
++ * ap (to effect a station).
++ */
++struct ieee80211req_mlme {
++	u_int8_t im_op;			/* operation to perform */
++#define	IEEE80211_MLME_ASSOC		1	/* associate station */
++#define	IEEE80211_MLME_DISASSOC		2	/* disassociate station */
++#define	IEEE80211_MLME_DEAUTH		3	/* deauthenticate station */
++#define	IEEE80211_MLME_AUTHORIZE	4	/* authorize station */
++#define	IEEE80211_MLME_UNAUTHORIZE	5	/* unauthorize station */
++#define IEEE80211_MLME_CLEAR_STATS	6	/* clear station statistic */
++	u_int8_t im_ssid_len;		/* length of optional ssid */
++	u_int16_t im_reason;		/* 802.11 reason code */
++	u_int8_t im_macaddr[IEEE80211_ADDR_LEN];
++	u_int8_t im_ssid[IEEE80211_NWID_LEN];
++};
++
++/* 
++ * MAC ACL operations.
++ */
++enum {
++	IEEE80211_MACCMD_POLICY_OPEN	= 0,	/* set policy: no ACL's */
++	IEEE80211_MACCMD_POLICY_ALLOW	= 1,	/* set policy: allow traffic */
++	IEEE80211_MACCMD_POLICY_DENY	= 2,	/* set policy: deny traffic */
++	IEEE80211_MACCMD_FLUSH		= 3,	/* flush ACL database */
++	IEEE80211_MACCMD_DETACH		= 4,	/* detach ACL policy */
++};
++
++/*
++ * Set the active channel list.  Note this list is
++ * intersected with the available channel list in
++ * calculating the set of channels actually used in
++ * scanning.
++ */
++struct ieee80211req_chanlist {
++	u_int8_t ic_channels[IEEE80211_CHAN_BYTES];
++};
++
++/*
++ * Get the active channel list info.
++ */
++struct ieee80211req_chaninfo {
++	u_int ic_nchans;
++	struct ieee80211_channel ic_chans[IEEE80211_CHAN_MAX];
++};
++
++/*
++ * Retrieve the WPA/RSN information element for an associated station.
++ */
++struct ieee80211req_wpaie {
++	u_int8_t	wpa_macaddr[IEEE80211_ADDR_LEN];
++	u_int8_t	wpa_ie[IEEE80211_MAX_OPT_IE];
++	u_int8_t	rsn_ie[IEEE80211_MAX_OPT_IE];
++
++	u_int8_t	wps_ie[IEEE80211_MAX_OPT_IE]; //RTK_HAPD WIFI_HAPD
++
++};
++
++/*
++ * Retrieve per-node statistics.
++ */
++struct ieee80211req_sta_stats {
++	union {
++		/* NB: explicitly force 64-bit alignment */
++		u_int8_t macaddr[IEEE80211_ADDR_LEN];
++		u_int64_t pad;
++	} is_u;
++	struct ieee80211_nodestats is_stats;
++};
++
++/*
++ * Station information block; the mac address is used
++ * to retrieve other data like stats, unicast key, etc.
++ */
++struct ieee80211req_sta_info {
++	u_int16_t isi_len;		/* length (mult of 4) */
++	u_int16_t isi_freq;		/* MHz */
++	u_int16_t isi_flags;		/* channel flags */
++	u_int16_t isi_state;		/* state flags */
++	u_int8_t isi_authmode;		/* authentication algorithm */
++	u_int8_t isi_rssi;
++	u_int16_t isi_capinfo;		/* capabilities */
++	u_int8_t isi_athflags;		/* Atheros capabilities */
++	u_int8_t isi_erp;		/* ERP element */
++	u_int8_t isi_macaddr[IEEE80211_ADDR_LEN];
++	u_int8_t isi_nrates;		/* negotiated rates */
++	u_int8_t isi_rates[IEEE80211_RATE_MAXSIZE];
++	u_int8_t isi_txrate;		/* index to isi_rates[] */
++	u_int16_t isi_ie_len;		/* IE length */
++	u_int16_t isi_associd;		/* assoc response */
++	u_int16_t isi_txpower;		/* current tx power */
++	u_int16_t isi_vlan;		/* vlan tag */
++	u_int16_t isi_txseqs[17];	/* seq to be transmitted */
++	u_int16_t isi_rxseqs[17];	/* seq previous for qos frames*/
++	u_int16_t isi_inact;		/* inactivity timer */
++	u_int8_t isi_uapsd;		/* UAPSD queues */
++	u_int8_t isi_opmode;		/* sta operating mode */
++
++	/* XXX frag state? */
++	/* variable length IE data */
++};
++
++enum {
++	IEEE80211_STA_OPMODE_NORMAL,
++	IEEE80211_STA_OPMODE_XR
++};
++
++/*
++ * Retrieve per-station information; to retrieve all
++ * specify a mac address of ff:ff:ff:ff:ff:ff.
++ */
++struct ieee80211req_sta_req {
++	union {
++		/* NB: explicitly force 64-bit alignment */
++		u_int8_t macaddr[IEEE80211_ADDR_LEN];
++		u_int64_t pad;
++	} is_u;
++	struct ieee80211req_sta_info info[1];	/* variable length */
++};
++
++/*
++ * Get/set per-station tx power cap.
++ */
++struct ieee80211req_sta_txpow {
++	u_int8_t	it_macaddr[IEEE80211_ADDR_LEN];
++	u_int8_t	it_txpow;
++};
++
++/*
++ * WME parameters are set and return using i_val and i_len.
++ * i_val holds the value itself.  i_len specifies the AC
++ * and, as appropriate, then high bit specifies whether the
++ * operation is to be applied to the BSS or ourself.
++ */
++#define	IEEE80211_WMEPARAM_SELF	0x0000		/* parameter applies to self */
++#define	IEEE80211_WMEPARAM_BSS	0x8000		/* parameter applies to BSS */
++#define	IEEE80211_WMEPARAM_VAL	0x7fff		/* parameter value */
++
++/*
++ * Scan result data returned for IEEE80211_IOC_SCAN_RESULTS.
++ */
++struct ieee80211req_scan_result {
++	u_int16_t isr_len;		/* length (mult of 4) */
++	u_int16_t isr_freq;		/* MHz */
++	u_int16_t isr_flags;		/* channel flags */
++	u_int8_t isr_noise;
++	u_int8_t isr_rssi;
++	u_int8_t isr_intval;		/* beacon interval */
++	u_int16_t isr_capinfo;		/* capabilities */
++	u_int8_t isr_erp;		/* ERP element */
++	u_int8_t isr_bssid[IEEE80211_ADDR_LEN];
++	u_int8_t isr_nrates;
++	u_int8_t isr_rates[IEEE80211_RATE_MAXSIZE];
++	u_int8_t isr_ssid_len;		/* SSID length */
++	u_int8_t isr_ie_len;		/* IE length */
++	u_int8_t isr_pad[5];
++	/* variable length SSID followed by IE data */
++};
++
++#ifdef __FreeBSD__
++/*
++ * FreeBSD-style ioctls.
++ */
++/* the first member must be matched with struct ifreq */
++struct ieee80211req {
++	char i_name[IFNAMSIZ];	/* if_name, e.g. "wi0" */
++	u_int16_t i_type;	/* req type */
++	int16_t 	i_val;		/* Index or simple value */
++	int16_t 	i_len;		/* Index or simple value */
++	void *i_data;		/* Extra data */
++};
++#define	SIOCS80211		 _IOW('i', 234, struct ieee80211req)
++#define	SIOCG80211		_IOWR('i', 235, struct ieee80211req)
++#define	SIOCG80211STATS		_IOWR('i', 236, struct ifreq)
++#define	SIOC80211IFCREATE	_IOWR('i', 237, struct ifreq)
++#define	SIOC80211IFDESTROY	 _IOW('i', 238, struct ifreq)
++
++#define IEEE80211_IOC_SSID		1
++#define IEEE80211_IOC_NUMSSIDS		2
++#define IEEE80211_IOC_WEP		3
++#define 	IEEE80211_WEP_NOSUP		-1
++#define 	IEEE80211_WEP_OFF		0
++#define 	IEEE80211_WEP_ON		1
++#define 	IEEE80211_WEP_MIXED		2
++#define IEEE80211_IOC_WEPKEY		4
++#define IEEE80211_IOC_NUMWEPKEYS	5
++#define IEEE80211_IOC_WEPTXKEY		6
++#define IEEE80211_IOC_AUTHMODE		7
++#define IEEE80211_IOC_STATIONNAME	8
++#define IEEE80211_IOC_CHANNEL		9
++#define IEEE80211_IOC_POWERSAVE		10
++#define 	IEEE80211_POWERSAVE_NOSUP	-1
++#define 	IEEE80211_POWERSAVE_OFF		0
++#define 	IEEE80211_POWERSAVE_CAM		1
++#define 	IEEE80211_POWERSAVE_PSP		2
++#define 	IEEE80211_POWERSAVE_PSP_CAM	3
++#define 	IEEE80211_POWERSAVE_ON		IEEE80211_POWERSAVE_CAM
++#define IEEE80211_IOC_POWERSAVESLEEP	11
++#define	IEEE80211_IOC_RTSTHRESHOLD	12
++#define IEEE80211_IOC_PROTMODE		13
++#define 	IEEE80211_PROTMODE_OFF		0
++#define 	IEEE80211_PROTMODE_CTS		1
++#define 	IEEE80211_PROTMODE_RTSCTS	2
++#define	IEEE80211_IOC_TXPOWER		14	/* global tx power limit */
++#define	IEEE80211_IOC_BSSID		15
++#define	IEEE80211_IOC_ROAMING		16	/* roaming mode */
++#define	IEEE80211_IOC_PRIVACY		17	/* privacy invoked */
++#define	IEEE80211_IOC_DROPUNENCRYPTED	18	/* discard unencrypted frames */
++#define	IEEE80211_IOC_WPAKEY		19
++#define	IEEE80211_IOC_DELKEY		20
++#define	IEEE80211_IOC_MLME		21
++#define	IEEE80211_IOC_OPTIE		22	/* optional info. element */
++#define	IEEE80211_IOC_SCAN_REQ		23
++#define	IEEE80211_IOC_SCAN_RESULTS	24
++#define	IEEE80211_IOC_COUNTERMEASURES	25	/* WPA/TKIP countermeasures */
++#define	IEEE80211_IOC_WPA		26	/* WPA mode (0,1,2) */
++#define	IEEE80211_IOC_CHANLIST		27	/* channel list */
++#define	IEEE80211_IOC_WME		28	/* WME mode (on, off) */
++#define	IEEE80211_IOC_HIDESSID		29	/* hide SSID mode (on, off) */
++#define IEEE80211_IOC_APBRIDGE		30	/* AP inter-sta bridging */
++#define	IEEE80211_IOC_MCASTCIPHER	31	/* multicast/default cipher */
++#define	IEEE80211_IOC_MCASTKEYLEN	32	/* multicast key length */
++#define	IEEE80211_IOC_UCASTCIPHERS	33	/* unicast cipher suites */
++#define	IEEE80211_IOC_UCASTCIPHER	34	/* unicast cipher */
++#define	IEEE80211_IOC_UCASTKEYLEN	35	/* unicast key length */
++#define	IEEE80211_IOC_DRIVER_CAPS	36	/* driver capabilities */
++#define	IEEE80211_IOC_KEYMGTALGS	37	/* key management algorithms */
++#define	IEEE80211_IOC_RSNCAPS		38	/* RSN capabilities */
++#define	IEEE80211_IOC_WPAIE		39	/* WPA information element */
++#define	IEEE80211_IOC_STA_STATS		40	/* per-station statistics */
++#define	IEEE80211_IOC_MACCMD		41	/* MAC ACL operation */
++#define	IEEE80211_IOC_TXPOWMAX		43	/* max tx power for channel */
++#define	IEEE80211_IOC_STA_TXPOW		44	/* per-station tx power limit */
++#define	IEEE80211_IOC_STA_INFO		45	/* station/neighbor info */
++#define	IEEE80211_IOC_WME_CWMIN		46	/* WME: ECWmin */
++#define	IEEE80211_IOC_WME_CWMAX		47	/* WME: ECWmax */
++#define	IEEE80211_IOC_WME_AIFS		48	/* WME: AIFSN */
++#define	IEEE80211_IOC_WME_TXOPLIMIT	49	/* WME: txops limit */
++#define	IEEE80211_IOC_WME_ACM		50	/* WME: ACM (bss only) */
++#define	IEEE80211_IOC_WME_ACKPOLICY	51	/* WME: ACK policy (!bss only)*/
++#define	IEEE80211_IOC_DTIM_PERIOD	52	/* DTIM period (beacons) */
++#define	IEEE80211_IOC_BEACON_INTERVAL	53	/* beacon interval (ms) */
++#define	IEEE80211_IOC_ADDMAC		54	/* add sta to MAC ACL table */
++#define	IEEE80211_IOC_DELMAC		55	/* del sta from MAC ACL table */
++#define	IEEE80211_IOC_FF		56	/* ATH fast frames (on, off) */
++#define	IEEE80211_IOC_TURBOP		57	/* ATH turbo' (on, off) */
++#define	IEEE80211_IOC_APPIEBUF		58	/* IE in the management frame */
++#define	IEEE80211_IOC_FILTERFRAME	59	/* management frame filter */
++
++/*
++ * Scan result data returned for IEEE80211_IOC_SCAN_RESULTS.
++ */
++struct ieee80211req_scan_result {
++	u_int16_t isr_len;		/* length (mult of 4) */
++	u_int16_t isr_freq;		/* MHz */
++	u_int16_t isr_flags;		/* channel flags */
++	u_int8_t isr_noise;
++	u_int8_t isr_rssi;
++	u_int8_t isr_intval;		/* beacon interval */
++	u_int16_t isr_capinfo;		/* capabilities */
++	u_int8_t isr_erp;		/* ERP element */
++	u_int8_t isr_bssid[IEEE80211_ADDR_LEN];
++	u_int8_t isr_nrates;
++	u_int8_t isr_rates[IEEE80211_RATE_MAXSIZE];
++	u_int8_t isr_ssid_len;		/* SSID length */
++	u_int8_t isr_ie_len;		/* IE length */
++	u_int8_t isr_pad[5];
++	/* variable length SSID followed by IE data */
++};
++
++#endif /* __FreeBSD__ */
++
++#ifdef __linux__
++/*
++ * Wireless Extensions API, private ioctl interfaces.
++ *
++ * NB: Even-numbered ioctl numbers have set semantics and are privileged!
++ *     (regardless of the incorrect comment in wireless.h!)
++ */
++#ifdef __KERNEL__
++#include <linux/if.h>
++#endif
++#define	IEEE80211_IOCTL_SETPARAM	(SIOCIWFIRSTPRIV+0)
++#define	IEEE80211_IOCTL_GETPARAM	(SIOCIWFIRSTPRIV+1)
++#define	IEEE80211_IOCTL_SETMODE		(SIOCIWFIRSTPRIV+2)
++#define	IEEE80211_IOCTL_GETMODE		(SIOCIWFIRSTPRIV+3)
++#define	IEEE80211_IOCTL_SETWMMPARAMS	(SIOCIWFIRSTPRIV+4)
++#define	IEEE80211_IOCTL_GETWMMPARAMS	(SIOCIWFIRSTPRIV+5)
++#define	IEEE80211_IOCTL_SETCHANLIST	(SIOCIWFIRSTPRIV+6)
++#define	IEEE80211_IOCTL_GETCHANLIST	(SIOCIWFIRSTPRIV+7)
++#define	IEEE80211_IOCTL_CHANSWITCH	(SIOCIWFIRSTPRIV+8)
++#define	IEEE80211_IOCTL_GET_APPIEBUF	(SIOCIWFIRSTPRIV+9)
++#define	IEEE80211_IOCTL_SET_APPIEBUF	(SIOCIWFIRSTPRIV+10)
++#define	IEEE80211_IOCTL_FILTERFRAME	(SIOCIWFIRSTPRIV+12)
++#define	IEEE80211_IOCTL_GETCHANINFO	(SIOCIWFIRSTPRIV+13)
++#define	IEEE80211_IOCTL_SETOPTIE	(SIOCIWFIRSTPRIV+14)
++#define	IEEE80211_IOCTL_GETOPTIE	(SIOCIWFIRSTPRIV+15)
++#define	IEEE80211_IOCTL_SETMLME		(SIOCIWFIRSTPRIV+16)
++#define	IEEE80211_IOCTL_SETKEY		(SIOCIWFIRSTPRIV+18)
++#define	IEEE80211_IOCTL_DELKEY		(SIOCIWFIRSTPRIV+20)
++#define	IEEE80211_IOCTL_ADDMAC		(SIOCIWFIRSTPRIV+22)
++#define	IEEE80211_IOCTL_DELMAC		(SIOCIWFIRSTPRIV+24)
++#define	IEEE80211_IOCTL_WDSADDMAC	(SIOCIWFIRSTPRIV+26)
++#define	IEEE80211_IOCTL_WDSDELMAC	(SIOCIWFIRSTPRIV+28)
++#define	IEEE80211_IOCTL_KICKMAC		(SIOCIWFIRSTPRIV+30)
++
++enum {
++	IEEE80211_WMMPARAMS_CWMIN       = 1,
++	IEEE80211_WMMPARAMS_CWMAX       = 2,
++	IEEE80211_WMMPARAMS_AIFS       	= 3,
++	IEEE80211_WMMPARAMS_TXOPLIMIT	= 4,
++	IEEE80211_WMMPARAMS_ACM		= 5,
++	IEEE80211_WMMPARAMS_NOACKPOLICY	= 6,	
++};
++enum {
++	IEEE80211_PARAM_TURBO		= 1,	/* turbo mode */
++	IEEE80211_PARAM_MODE		= 2,	/* phy mode (11a, 11b, etc.) */
++	IEEE80211_PARAM_AUTHMODE	= 3,	/* authentication mode */
++	IEEE80211_PARAM_PROTMODE	= 4,	/* 802.11g protection */
++	IEEE80211_PARAM_MCASTCIPHER	= 5,	/* multicast/default cipher */
++	IEEE80211_PARAM_MCASTKEYLEN	= 6,	/* multicast key length */
++	IEEE80211_PARAM_UCASTCIPHERS	= 7,	/* unicast cipher suites */
++	IEEE80211_PARAM_UCASTCIPHER	= 8,	/* unicast cipher */
++	IEEE80211_PARAM_UCASTKEYLEN	= 9,	/* unicast key length */
++	IEEE80211_PARAM_WPA		= 10,	/* WPA mode (0,1,2) */
++	IEEE80211_PARAM_ROAMING		= 12,	/* roaming mode */
++	IEEE80211_PARAM_PRIVACY		= 13,	/* privacy invoked */
++	IEEE80211_PARAM_COUNTERMEASURES	= 14,	/* WPA/TKIP countermeasures */
++	IEEE80211_PARAM_DROPUNENCRYPTED	= 15,	/* discard unencrypted frames */
++	IEEE80211_PARAM_DRIVER_CAPS	= 16,	/* driver capabilities */
++	IEEE80211_PARAM_MACCMD		= 17,	/* MAC ACL operation */
++	IEEE80211_PARAM_WMM		= 18,	/* WMM mode (on, off) */
++	IEEE80211_PARAM_HIDESSID	= 19,	/* hide SSID mode (on, off) */
++	IEEE80211_PARAM_APBRIDGE    	= 20,   /* AP inter-sta bridging */
++	IEEE80211_PARAM_KEYMGTALGS	= 21,	/* key management algorithms */
++	IEEE80211_PARAM_RSNCAPS		= 22,	/* RSN capabilities */
++	IEEE80211_PARAM_INACT		= 23,	/* station inactivity timeout */
++	IEEE80211_PARAM_INACT_AUTH	= 24,	/* station auth inact timeout */
++	IEEE80211_PARAM_INACT_INIT	= 25,	/* station init inact timeout */
++	IEEE80211_PARAM_ABOLT		= 26,	/* Atheros Adv. Capabilities */
++	IEEE80211_PARAM_DTIM_PERIOD	= 28,	/* DTIM period (beacons) */
++	IEEE80211_PARAM_BEACON_INTERVAL	= 29,	/* beacon interval (ms) */
++	IEEE80211_PARAM_DOTH		= 30,	/* 11.h is on/off */
++	IEEE80211_PARAM_PWRTARGET	= 31,	/* Current Channel Pwr Constraint */
++	IEEE80211_PARAM_GENREASSOC	= 32,	/* Generate a reassociation request */
++	IEEE80211_PARAM_COMPRESSION	= 33,	/* compression */
++	IEEE80211_PARAM_FF		= 34,	/* fast frames support  */
++	IEEE80211_PARAM_XR		= 35,	/* XR support */
++	IEEE80211_PARAM_BURST		= 36,	/* burst mode */
++	IEEE80211_PARAM_PUREG		= 37,	/* pure 11g (no 11b stations) */
++	IEEE80211_PARAM_AR		= 38,	/* AR support */
++	IEEE80211_PARAM_WDS		= 39,	/* Enable 4 address processing */
++	IEEE80211_PARAM_BGSCAN		= 40,	/* bg scanning (on, off) */
++	IEEE80211_PARAM_BGSCAN_IDLE	= 41,	/* bg scan idle threshold */
++	IEEE80211_PARAM_BGSCAN_INTERVAL	= 42,	/* bg scan interval */
++	IEEE80211_PARAM_MCAST_RATE	= 43,	/* Multicast Tx Rate */
++	IEEE80211_PARAM_COVERAGE_CLASS	= 44,	/* coverage class */
++	IEEE80211_PARAM_COUNTRY_IE	= 45,	/* enable country IE */
++	IEEE80211_PARAM_SCANVALID	= 46,	/* scan cache valid threshold */
++	IEEE80211_PARAM_ROAM_RSSI_11A	= 47,	/* rssi threshold in 11a */
++	IEEE80211_PARAM_ROAM_RSSI_11B	= 48,	/* rssi threshold in 11b */
++	IEEE80211_PARAM_ROAM_RSSI_11G	= 49,	/* rssi threshold in 11g */
++	IEEE80211_PARAM_ROAM_RATE_11A	= 50,	/* tx rate threshold in 11a */
++	IEEE80211_PARAM_ROAM_RATE_11B	= 51,	/* tx rate threshold in 11b */
++	IEEE80211_PARAM_ROAM_RATE_11G	= 52,	/* tx rate threshold in 11g */
++	IEEE80211_PARAM_UAPSDINFO	= 53,	/* value for qos info field */
++	IEEE80211_PARAM_SLEEP		= 54,	/* force sleep/wake */
++	IEEE80211_PARAM_QOSNULL		= 55,	/* force sleep/wake */
++	IEEE80211_PARAM_PSPOLL		= 56,	/* force ps-poll generation (sta only) */
++	IEEE80211_PARAM_EOSPDROP	= 57,	/* force uapsd EOSP drop (ap only) */
++	IEEE80211_PARAM_MARKDFS		= 58,	/* mark a dfs interference channel when found */
++	IEEE80211_PARAM_REGCLASS	= 59,	/* enable regclass ids in country IE */
++	IEEE80211_PARAM_DROPUNENC_EAPOL	= 60,	/* drop unencrypted eapol frames */
++ 	IEEE80211_PARAM_SHPREAMBLE	= 61,	/* Short Preamble */
++};
++
++#define	SIOCG80211STATS			(SIOCDEVPRIVATE+2)
++/* NB: require in+out parameters so cannot use wireless extensions, yech */
++#define	IEEE80211_IOCTL_GETKEY		(SIOCDEVPRIVATE+3)
++#define	IEEE80211_IOCTL_GETWPAIE	(SIOCDEVPRIVATE+4)
++#define	IEEE80211_IOCTL_STA_STATS	(SIOCDEVPRIVATE+5)
++#define	IEEE80211_IOCTL_STA_INFO	(SIOCDEVPRIVATE+6)
++#define	SIOC80211IFCREATE		(SIOCDEVPRIVATE+7)
++#define	SIOC80211IFDESTROY	 	(SIOCDEVPRIVATE+8)
++#define	IEEE80211_IOCTL_SCAN_RESULTS	(SIOCDEVPRIVATE+9)
++
++struct ieee80211_clone_params {
++	char icp_name[IFNAMSIZ];		/* device name */
++	u_int16_t icp_opmode;			/* operating mode */
++	u_int16_t icp_flags;			/* see below */
++#define	IEEE80211_CLONE_BSSID	0x0001		/* allocate unique mac/bssid */
++#define	IEEE80211_NO_STABEACONS	0x0002		/* Do not setup the station beacon timers */
++};
++
++/* APPIEBUF related definitions */
++
++/* Management frame type to which application IE is added */
++enum {
++	IEEE80211_APPIE_FRAME_BEACON		= 0,
++	IEEE80211_APPIE_FRAME_PROBE_REQ		= 1,
++	IEEE80211_APPIE_FRAME_PROBE_RESP	= 2,
++	IEEE80211_APPIE_FRAME_ASSOC_REQ		= 3,
++	IEEE80211_APPIE_FRAME_ASSOC_RESP	= 4,
++	IEEE80211_APPIE_NUM_OF_FRAME		= 5
++};
++
++struct ieee80211req_getset_appiebuf {
++	u_int32_t	app_frmtype;		/* management frame type for which buffer is added */
++	u_int32_t	app_buflen;		/* application-supplied buffer length */
++	u_int8_t	app_buf[0];		/* application-supplied IE(s) */
++};
++
++/* Flags ORed by application to set filter for receiving management frames */
++enum {
++	IEEE80211_FILTER_TYPE_BEACON		= 1<<0,
++	IEEE80211_FILTER_TYPE_PROBE_REQ		= 1<<1,
++	IEEE80211_FILTER_TYPE_PROBE_RESP	= 1<<2,
++	IEEE80211_FILTER_TYPE_ASSOC_REQ		= 1<<3,
++	IEEE80211_FILTER_TYPE_ASSOC_RESP	= 1<<4,
++	IEEE80211_FILTER_TYPE_AUTH		= 1<<5,
++	IEEE80211_FILTER_TYPE_DEAUTH		= 1<<6,
++	IEEE80211_FILTER_TYPE_DISASSOC		= 1<<7,
++	IEEE80211_FILTER_TYPE_ACTION		= 1<<8,/*add define for Huawei*/
++	IEEE80211_FILTER_TYPE_ALL		= 0xFF	/* used to check the valid filter bits */
++};
++
++struct ieee80211req_set_filter {
++	u_int32_t app_filterype;		/* management frame filter type */
++};
++
++
++//RTK_HAPD WIFI_HAPD
++
++#define MAX_2G_CHANNEL_NUM		14
++
++#if 0
++#ifdef CONFIG_RTL8196B_TLD
++#define NUM_ACL					64
++#else
++#define NUM_ACL					32
++#endif
++#endif
++
++#define MACADDRLEN				6
++
++#pragma pack(1)
++
++struct rtk_hapd_config{
++	unsigned char 	is_hapd;
++	unsigned int  	band; // hw_mode, ieee80211n
++	unsigned int	channel; //channel
++	unsigned int  	bcnint;	//beacon_int
++	unsigned int  	dtimperiod;	//dtim_period
++	unsigned int  	stanum;	//max_num_sta
++	unsigned int  	rtsthres; //rts_threshold	
++ 	unsigned int  	fragthres; //fragm_threshold
++ 	unsigned int  	oprates;	//supported_rates
++ 	unsigned int  	basicrates;	//basic_rates
++	unsigned int 	preamble; //preamble
++	unsigned int  	aclmode; //macaddr_acl, accept_mac_file, deny_mac_file		
++ 	unsigned int  	aclnum;	//macaddr_acl, accept_mac_file, deny_mac_file
++	unsigned char 	acladdr[NUM_ACL][MACADDRLEN]; //macaddr_acl, accept_mac_file, deny_mac_file
++	unsigned int  	hiddenAP; //ignore_broadcast_ssid	
++	unsigned int  	qos_enable; //wmm_enable
++	unsigned int  	expired_time; //ap_max_inactivity
++	unsigned int  	block_relay; //bridge_packets
++	unsigned int  	shortGI20M;	// ht_capab
++ 	unsigned int  	shortGI40M;	// ht_capab
++
++ //Above are for Hostapd owned configurations
++ //=====================================================
++ //Below are for RTK private configurations
++ 
++ 	unsigned char	pwrlevelCCK_A[MAX_2G_CHANNEL_NUM];
++	unsigned char	pwrlevelCCK_B[MAX_2G_CHANNEL_NUM];
++	unsigned char	pwrlevelHT40_1S_A[MAX_2G_CHANNEL_NUM];
++	unsigned char	pwrlevelHT40_1S_B[MAX_2G_CHANNEL_NUM];
++	unsigned char	pwrdiffHT40_2S[MAX_2G_CHANNEL_NUM];
++	unsigned char	pwrdiffHT20[MAX_2G_CHANNEL_NUM];
++	unsigned char	pwrdiffOFDM[MAX_2G_CHANNEL_NUM];	                       
++ 	unsigned int	phyBandSelect;
++	unsigned int 	ther;
++ 	unsigned int  	swcrypto;					
++ 	unsigned int  	regdomain;		
++ 	unsigned int  	autorate;
++	unsigned int	fixrate;
++ 	unsigned int 	disable_protection; 			
++ 	unsigned int 	disable_olbc; 			
++ 	unsigned int 	deny_legacy;			                                                                    
++ 	unsigned int  	opmode;		                            	                                           
++ 	unsigned int  	vap_enable;	
++	unsigned int  	use40M;
++ 	unsigned int  	_2ndchoffset;			
++ 	unsigned int  	ampdu;		                                          
++ 	unsigned int  	coexist;		                                                                                         
++  	unsigned int 	rssi_dump;                           
++  	unsigned int 	mp_specific;	                   
++  	unsigned int 	use_ext_pa;	
++	unsigned int    guest_access;
++	unsigned int	macPhyMode;
++                                                
++};    
++
++#pragma pack()
++
++
++
++#define MAX_WDS_NUM 4
++#define HOSTAPD_MAX_SSID_LEN 32
++
++struct rtk_wds_config {
++	int				wdsEnabled;
++	unsigned char 	macAddr [MAX_WDS_NUM][6];
++	int				wdsNum;
++	char 			ssid[HOSTAPD_MAX_SSID_LEN + 1];
++	int				wdsPrivacy;
++	int				wdsWepKeyLen;
++	char			*wdsWepKey;
++	char			*wdsPskPassPhrase;
++};
++
++
++//END --- RTK_HAPD WIFI_HAPD 
++
++
++//RTK_WPAS WIFI_WPAS
++
++enum {
++	WPAS_CONFIG_MIB			= 1,
++	WPAS_CONFIG_WEPKEY		= 2,
++};
++
++#pragma pack(1)
++
++struct rtk_wpas_config {
++	unsigned char is_hapd;
++	unsigned char type;
++	unsigned char bandmode;			// 1: selective  2: concurrent
++	unsigned char phymode;			// 1: 2.4G  2: 5G
++	unsigned char wep_key[16];
++	int 		  wep_keyidx;
++	int 		  wep_keylen;
++
++};
++
++#pragma pack()
++
++
++//END --- RTK_WPAS WIFI_WPAS
++
++
++
++#endif /* __linux__ */
++
++#endif /* _NET80211_IEEE80211_IOCTL_H_ */
 --- a/include/net/inet_sock.h
 +++ b/include/net/inet_sock.h
 @@ -263,7 +263,9 @@

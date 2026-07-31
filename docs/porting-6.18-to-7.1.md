@@ -150,6 +150,93 @@ The enum itself is alive and in the same header — 7.1 only reworded it, swappi
 Fix: include the defining header directly in `rtk_fc_helper.c`. Its sibling
 `rtk_fc_assistant.c` always did; this file was relying on an accident.
 
+### Wi-Fi: `cfg80211_ops` moved to `wireless_dev *`
+
+7.1 changed the second argument of a family of `cfg80211_ops` callbacks from
+`struct net_device *` to `struct wireless_dev *`. Ten changed; both vendor
+drivers assign nine of them:
+
+```
+add_key  get_key  del_key  set_default_mgmt_key
+add_station  del_station  change_station  get_station  dump_station
+```
+
+(the tenth, `set_default_beacon_key`, is unused here).
+
+**`set_default_key` did NOT change** — it still takes `struct net_device *`,
+sitting immediately between four that did. Enumerate the real signatures out of
+`include/net/cfg80211.h` rather than pattern-matching on the compiler errors:
+
+```sh
+diff <(sed -n '/^struct cfg80211_ops {/,/^};/p' old/include/net/cfg80211.h) \
+     <(sed -n '/^struct cfg80211_ops {/,/^};/p' new/include/net/cfg80211.h)
+```
+
+Both drivers already had a shim layer from BSP-6's 5.10 → 6.18 round (`ph_*` in
+g6, `rtk_shim_*` in rtl8192cd) that absorbs the `link_id`/`radio_idx` additions,
+so the 7.1 change extends that layer: the shim takes the `wireless_dev *` and
+passes `wdev->netdev` to the untouched vendor handler.
+
+> Do **not** reach for `-Wno-error=incompatible-pointer-types` here. BSP-6's
+> notes are explicit that doing so hid a `cfg80211_ops` mismatch which then
+> panicked the board at runtime. A wrong entry in this table is a crash, not a
+> warning.
+
+The `cfg80211_new_sta()` / `cfg80211_del_sta()` *call* sites moved the same way;
+they take the `wireless_dev *`, i.e. `dev->ieee80211_ptr` (7 sites).
+
+### Wi-Fi: PPPoE uapi structs lost their flexible array members
+
+```
+8192cd_br_ext.c: error: 'struct pppoe_hdr' has no member named 'tag'
+rtw_br_ext.c:    error: 'struct pppoe_tag' has no member named 'tag_data'
+```
+
+7.1 hid both behind `#ifndef __KERNEL__` in `include/uapi/linux/if_pppox.h`:
+
+```diff
+ struct pppoe_tag {
+ 	__be16 tag_type;
+ 	__be16 tag_len;
++#ifndef __KERNEL__
+ 	char tag_data[];
++#endif
+ } __attribute__ ((packed));
+```
+
+The intent is that in-kernel code computes the offsets itself. Both Realtek
+bridge-extension files parse PPPoE tags (20 sites between them), and both
+include `<linux/if_pppox.h>` — which this port already carries in `overlay/` —
+so the accessors live there once:
+
+```c
+#define pppoe_hdr_tags(ph)	((unsigned char *)((ph) + 1))
+#define pppoe_tag_data(t)	((unsigned char *)((t) + 1))
+```
+
+Both structs are `__packed`, so `sizeof()` is exactly the on-wire header length
+and `(x + 1)` lands on the payload.
+
+### PCIe: `<linux/of_gpio.h>` is gone
+
+`arch/mips/rtl9607c/pci.c` compiles for the first time in this BSP once
+`CONFIG_PCI=y` (it was off while Wi-Fi was out of scope). 7.1 removed
+`<linux/of_gpio.h>` and `of_get_named_gpio()` along with the rest of the legacy
+OF GPIO lookup. The *number*-based API in `<linux/gpio.h>` survives
+(`gpio_request_one`, `gpio_to_desc`, `GPIOF_OUT_INIT_LOW`), so only the DT
+lookup needed rewriting.
+
+The board DT names the pin with a bare property:
+
+```dts
+pci0_gpio_rst = <&gpio1 8 GPIO_ACTIVE_HIGH>;
+```
+
+not the `<con-id>-gpios` form the `fwnode_gpiod_get_index()` helpers require, so
+the phandle is resolved by hand — `of_parse_phandle_with_args()` →
+`gpio_device_find_by_fwnode()` → `gpio_device_get_desc()` → `desc_to_gpio()` —
+and handed back to the existing legacy calls.
+
 ### Watched for, did not bite
 
 - **`xt_register_table()` gained a `template_ops` argument** in 7.1, and

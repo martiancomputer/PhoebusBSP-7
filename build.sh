@@ -67,46 +67,7 @@ cp -a "$SDK/vendor/include/dt-bindings/soc/9607xc_irqs.h"        "$K/include/dt-
 cp -a "$BSP/overlay/." "$K/"
 
 # --- 5. rootfs (BEFORE the kernel: the initramfs is baked in during the kernel build) ---
-# Known bug in the shared SDK: rootfs/build-rootfs.sh's last chmod names
-# etc/s6/rc.boot, which no longer exists in the tracked skeleton, so the script
-# exits 1 even though the tree is complete (chmod still applies the modes to the
-# operands that do exist). Rather than let `set -e` kill an otherwise-good build,
-# check the tree for what actually has to be there and only then continue.
-# Delete this block once Phoebus-SDK drops the dead operand from that line.
-if ! "$SDK/rootfs/build-rootfs.sh" "$WORK/rootfs-tree"; then
-	if [ -x "$WORK/rootfs-tree/init" ] && [ -x "$WORK/rootfs-tree/bin/busybox" ] &&
-	   [ -x "$WORK/rootfs-tree/etc/s6/sv/getty-console/run" ]; then
-		echo "WARNING: sdk/rootfs/build-rootfs.sh exited non-zero, but the rootfs tree"
-		echo "         is complete (init, busybox and getty-console/run all present and"
-		echo "         executable). Continuing. See PORT_NOTES.md 'Known issue in the"
-		echo "         shared SDK'."
-	else
-		echo "ERROR: rootfs build failed and the tree is incomplete." >&2
-		exit 1
-	fi
-fi
-
-# --- 5b. local fixes to the generated rootfs -------------------------------
-# These patch the BUILT tree, never sdk/, because that skeleton is shared with
-# PhoebusBSP-6 where the current text is fine. Drop each when the SDK is fixed.
-#
-# (a) The banner hardcodes "Linux 6.18.39", so a 7.1 image lies about itself on
-#     every boot. Make it report the running kernel instead of any fixed string.
-for f in "$WORK/rootfs-tree/init" "$WORK/rootfs-tree/etc/init.d/rcS"; do
-	[ -f "$f" ] && sed -i 's|Linux 6\.18\.39|Linux $(uname -r)|' "$f"
-done
-#
-# (b) network-up ends with a carrier-report loop whose last command is
-#         [ "$c" = "1" ] && echo ...
-#     When the last interface enumerated has no carrier that test is false, the
-#     && short-circuits, and the script exits 1 -- so s6-rc marks `network`
-#     failed and the ENTIRE bundle (udhcpd, wan, nat, hostapd) never starts.
-#     The script has no `set -e`; it is purely the exit status of the last
-#     command. Force a success status.
-NUP="$WORK/rootfs-tree/etc/s6/scripts/network-up"
-if [ -f "$NUP" ] && ! grep -q '^exit 0$' "$NUP"; then
-	printf '\n# see PhoebusBSP-7 build.sh: last command must not decide the exit status\nexit 0\n' >> "$NUP"
-fi
+"$SDK/rootfs/build-rootfs.sh" "$WORK/rootfs-tree"
 
 # --- 6. configure + build ---
 cp "$BSP/configs/rtl9607c.config" "$K/.config"
