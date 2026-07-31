@@ -69,6 +69,15 @@ cp -a "$BSP/overlay/." "$K/"
 # --- 5. rootfs (BEFORE the kernel: the initramfs is baked in during the kernel build) ---
 "$SDK/rootfs/build-rootfs.sh" "$WORK/rootfs-tree"
 
+# --- 5b. the userspace the SDK's rootfs builder does not install -----------
+# hostapd, iptables, dropbear, the iw* tools and rootfs/usr/ are all referenced
+# by the shipped s6 services but never built or copied by build-rootfs.sh, so
+# without this the image boots both radios and cannot use them. Set SKIP_USERSPACE=1
+# for a kernel-only build; VENDOR_SDK points at the unpacked Realtek GPL drop.
+if [ -z "$SKIP_USERSPACE" ]; then
+	"$BSP/tools/build-userspace.sh" "$WORK/rootfs-tree"
+fi
+
 # --- 6. configure + build ---
 cp "$BSP/configs/rtl9607c.config" "$K/.config"
 # Point the built-in initramfs at the rootfs we just built. This overrides any
