@@ -94,8 +94,15 @@ make -C "$K" -j"$JOBS" uImage.lzma
 #  use the SDK image tools — see README)
 mkdir -p "$BSP/images"
 cp "$K/arch/mips/boot/uImage.lzma" "$BSP/images/uImage"
+# The rootfs is baked into the kernel, so uImage IS the initramfs image. The
+# TFTP/boot scripts in use fetch it as `uImage-initramfs`, so publish that name
+# too. A SYMLINK, deliberately, not a copy: a stale second copy that some step
+# forgets to refresh has already cost real flash cycles, and a link cannot go
+# stale relative to what it points at.
+ln -sfn uImage "$BSP/images/uImage-initramfs"
 echo
 echo "Build complete: $BSP/images/uImage  (load 0x80001000)"
+echo "               (also linked as images/uImage-initramfs for TFTP boot scripts)"
 echo "RAM-boot test on the board (no flash writes):"
 echo "  U-Boot> setenv bootargs console=ttyS0,115200 loglevel=8"
 echo "  U-Boot> loady 0x83000000    (send images/uImage via ymodem)"

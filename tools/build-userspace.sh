@@ -76,8 +76,15 @@ if [ ! -f "$STAGING/lib/libnl-3.so" ]; then
 	              --disable-cli --disable-static --enable-shared >/dev/null
 	  make -j"$(nproc)" >/dev/null && make install >/dev/null )
 fi
+# -L (dereference), NOT -a alone. libtool installs libnl-3.so.200 as a symlink to
+# libnl-3.so.200.20.0; `cp -a` copies the *link* and leaves it dangling in the
+# image, which the loader reports at runtime as
+#     hostapd: error while loading shared libraries: libnl-3.so.200:
+#     cannot open shared object file: No such file or directory
+# Copying the target under the SONAME is what the loader actually wants.
 for l in libnl-3.so.200 libnl-genl-3.so.200; do
-	cp -a "$STAGING/lib/$l" "$OUT/lib/" 2>/dev/null || true
+	rm -f "$OUT/lib/$l"          # cp refuses to write *through* a dangling link
+	cp -aL "$STAGING/lib/$l" "$OUT/lib/$l"
 done
 
 # --- 2. openssl (static; SAE needs real EC crypto) -------------------------
@@ -302,5 +309,31 @@ for s in etc/s6/scripts/nat-up etc/s6/scripts/network-up; do
 	done
 done
 [ "$fail" = 0 ] || { echo "ERROR: the image would boot with unusable services" >&2; exit 1; }
+
+# --- 10. guard: every DT_NEEDED library must RESOLVE inside the image ------
+# Checking only that a file of the right NAME exists is not enough: a dangling
+# symlink passes that and then fails at exec time. Resolve each one for real.
+say "verifying shared libraries resolve"
+# `[ -e ]` follows symlinks, so a dangling link fails this the way it fails exec.
+unresolved=$(
+	for b in "$OUT"/sbin/* "$OUT"/bin/* "$OUT"/usr/sbin/*; do
+		[ -f "$b" ] || continue
+		${CROSS_COMPILE}readelf -d "$b" 2>/dev/null \
+			| grep -oP '(?<=Shared library: \[)[^]]+'
+	done | sort -u | while read -r lib; do
+		found=0
+		for d in lib usr/lib; do [ -e "$OUT/$d/$lib" ] && found=1; done
+		[ "$found" = 1 ] || echo "$lib"
+	done)
+if [ -n "$unresolved" ]; then
+	echo "ERROR: these libraries are missing or dangling in the image:" >&2
+	echo "$unresolved" | sed 's/^/    /' >&2
+	exit 1
+fi
+
+# --- 11. runtime dirs the services expect ---------------------------------
+# udhcpd: can't open '/var/lib/misc/udhcpd.leases': No such file or directory
+mkdir -p "$OUT/var/lib/misc" "$OUT/etc/dropbear"
+: > "$OUT/var/lib/misc/udhcpd.leases"
 
 say "done -> $OUT"
