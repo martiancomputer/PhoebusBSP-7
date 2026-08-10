@@ -46,10 +46,17 @@ mkdir -p "$WORK"; cd "$WORK"
 rm -rf "$K"; tar xf "linux-$KVER.tar.xz"
 
 # --- 3. graft pristine vendor SoC code (must match the baseline the overlay was cut against) ---
-# NOTE: no Wi-Fi graft here. This BSP builds a Wi-Fi-less kernel (switch / GPON /
-# NIC / SMP / console); see README "Scope". The vendor Wi-Fi drivers are not in
-# Phoebus-SDK yet, so grafting them is deliberately not attempted.
 cp -a "$SDK/vendor/realtek-net/."                                "$K/drivers/net/ethernet/realtek/"
+# Wi-Fi. This also replaces drivers/net/wireless/realtek/{Kconfig,Makefile} with
+# the vendor pair that source/build g6_wifi_driver (5GHz RTL8832BR) and rtl8192cd
+# (2.4GHz RTL8192F). Without it the overlay still drops its handful of modified
+# driver files into the tree, but upstream's Kconfig never sources them, so the
+# symbols do not exist, olddefconfig silently discards CONFIG_RTLWIFI6 /
+# CONFIG_RTL8192CD from our defconfig, and the build succeeds with no Wi-Fi at
+# all -- vmlinux 33MB instead of 136MB and not one driver symbol in it.
+# The comment that used to sit here said the SDK had no Wi-Fi drivers; that was
+# true at 73627f6 and stopped being true at 2e1f9b3.
+cp -a "$SDK/vendor/realtek-wireless/."                           "$K/drivers/net/wireless/realtek/"
 cp -a "$SDK/vendor/platform/arch/mips/rtl9607c"                  "$K/arch/mips/"
 mkdir -p "$K/arch/mips/boot/dts/realtek"
 cp -a "$SDK/vendor/platform/arch/mips/boot/dts/realtek/."        "$K/arch/mips/boot/dts/realtek/"
