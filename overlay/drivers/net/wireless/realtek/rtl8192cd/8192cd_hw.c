@@ -17396,7 +17396,7 @@ int rtl8192cd_init_hw_PCI(struct rtl8192cd_priv *priv)
 #ifdef  CONFIG_WLAN_HAL
 	if (IS_HAL_CHIP(priv)) {
 
-		unsigned int ClkSel = XTAL_CLK_SEL_40M;	
+		unsigned int ClkSel = XTAL_CLK_SEL_40M;
 
 #if defined(CONFIG_AUTO_PCIE_PHY_SCAN)
 		// Get XTAL information from platform
@@ -18182,10 +18182,35 @@ int rtl8192cd_init_hw_PCI(struct rtl8192cd_priv *priv)
             }
             #endif
 
-#ifdef CONFIG_WLAN_HAL_8197F 
+#ifdef CONFIG_WLAN_HAL_8197F
 			if(GET_CHIP_VER(priv) == VERSION_8197F){
 				RTL_W8(0x7B, 0x0);
-				RTL_W8(0x7B, 0x7); 
+				RTL_W8(0x7B, 0x7);
+			}
+#endif
+/* Phoebus: RF power-on toggle for the 8192F, taken from the AX10v3 GPL
+ * (backports-5.2.8-1 rtl8192fe, same function). This driver was staged from the
+ * 8198D SDK, which only ever ran the sequence for the 8197F above -- so on our
+ * 8192F the analog front end was never enabled.
+ *
+ * 0x78-0x7B is REG_AFE_CTRL4, the analog front end control, and this whole
+ * region of init_hw_PCI is the per-chip RF power-on: the 8822B block just above
+ * is literally commented "Power ON 8822 RF" and does the same 0 -> 7 toggle on
+ * its own registers.
+ *
+ * Without it every register and table reads back correct, the RF die is powered
+ * (thermal sensor reports ~36) and the baseband runs, but no signal crosses the
+ * analog/digital boundary in either direction: a PSD scan returns zero across
+ * all 128 bins, nothing is received, and the beacons never reach the air.
+ *
+ * The vendor's 1ms settle between the two writes is deliberate -- the 8197F path
+ * above has no delay, but the 8192F needs the rail to collapse before re-enable.
+ */
+#ifdef CONFIG_WLAN_HAL_8192FE
+			if(GET_CHIP_VER(priv) == VERSION_8192F){
+				RTL_W8(0x7B, 0x0);
+				delay_ms(1);
+				RTL_W8(0x7B, 0x7);
 			}
 #endif
 #ifdef CONFIG_WLAN_HAL_8814BE //yllin8814B
