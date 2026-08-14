@@ -1248,9 +1248,26 @@ struct sk_buff *re8670_getAlloc(unsigned int size)
 #if defined(CONFIG_RTL865X_ETH_PRIV_SKB)
 			dynamic_alloc_skb_num++;
 #endif
-			skb = dev_alloc_skb(size);
-			if(skb && (unsigned int)skb->data&0xf) {
-				skb->data = (((unsigned int)skb->data)&0xfffffff0)+0x10;
+			/* Align the payload to 16 bytes for the DMA engine.
+			 *
+			 * The vendor did this by rewriting skb->data directly, which moves
+			 * data away from head without telling the skb. Linux 6.18's slab
+			 * checks catch the resulting free:
+			 *
+			 *   WARNING mm/slub.c free_large_kmalloc
+			 *   skb_release_data -> sk_skb_reason_drop -> arp_process
+			 *   page dumped because: Not a kmalloc allocation
+			 *
+			 * skb_reserve() moves data AND tail and leaves head alone, which
+			 * is the same alignment with an skb the kernel can still free.
+			 * Over-allocate by 16 so reserving cannot eat into the payload.
+			 */
+			skb = dev_alloc_skb(size + 16);
+			if (skb) {
+				unsigned int misalign = (unsigned long)skb->data & 0xf;
+
+				if (misalign)
+					skb_reserve(skb, 16 - misalign);
 			}
 		}
 #if 0
@@ -1263,9 +1280,14 @@ struct sk_buff *re8670_getAlloc(unsigned int size)
 #else
 	if (check_memory_avaliable(size))
 	{
-		skb = dev_alloc_skb(size);
-		if(skb && (unsigned int)skb->data&0xf) {
-			skb->data = (((unsigned int)skb->data)&0xfffffff0)+0x10;
+		/* Same 16-byte alignment via skb_reserve rather than by rewriting
+		 * skb->data -- see the comment on the other allocation path above. */
+		skb = dev_alloc_skb(size + 16);
+		if (skb) {
+			unsigned int misalign = (unsigned long)skb->data & 0xf;
+
+			if (misalign)
+				skb_reserve(skb, 16 - misalign);
 		}
 	}
 #if 0
@@ -11993,6 +12015,21 @@ static int rtk_gmac_re_private_data_init(void)
 	root_cp->re_private_data_ptr[1]->rx_buff_size = SKB_BUF_SIZE;
 	root_cp->re_private_data_ptr[2]->rx_buff_size = SKB_BUF_SIZE;
 	
+	/* Vendor default, deliberately restored.
+	 *
+	 * This was briefly set to GMAC_OFF to work around the recycle pool being
+	 * permanently empty, which was starving rx: 22688 of 26264 frames dropped
+	 * with 116MB free. That did let traffic through, and then killed the box
+	 * under load -- pool exhaustion is what triggers rx_pause_by_software, so
+	 * making allocation always succeed removed the driver's only flow control.
+	 * A speedtest filled memory with queued skbs until the OOM killer took
+	 * every service and the kernel panicked: "System is deadlocked on memory".
+	 *
+	 * The pool is the actual bug, and it is fixed by not using it -- see
+	 * CONFIG_RTL_ETH_RECYCLED_SKB in the defconfig. This flag is not consulted
+	 * on the non-pool path at all; it is left at the vendor value so that
+	 * re-enabling the pool later cannot silently reintroduce the OOM.
+	 */
 	root_cp->skb_dynamic_allocate_disable = (u8)GMAC_ON;
 
 	for (i=0U ; i<SW_PORT_NUM ; i++)
@@ -12285,21 +12322,22 @@ static int rtk_gmac_multi_lan_device_init(void)
 	change_dev_port_mapping(LAN_PORT5,"eth0.6");
 	change_dev_port_mapping(LAN_PORT6,"eth0.7");
 	change_dev_port_mapping(WAN_PORT,"nas0");
-	/* SGMII1 (port 7) is this board's Ethernet WAN, and it is measured, not
-	 * inferred: with a device in the WAN jack, port 7 was the only one of
-	 * ports 6/7/8 with any traffic at all (out_octets 4470, the DHCP discovers
-	 * from eth0.9), while 6 and 8 sat at zero in and zero out.
+	/* SGMII0 (port 6) is this board's Ethernet WAN -- stock's own base.sh says
+	 * wan_port=6, and configuring SDS0 is what finally brought the PHY-to-
+	 * switch SerDes up (dc0 reg 0x11: 6189 -> 61ad, link up and autoneg
+	 * complete) and moved port 6 in_octets off zero.
 	 *
-	 * eth0.9 already existed with a txPortMask for port 7, so transmit worked
-	 * -- but ingress had no mapping and fell through to the CPU root device
-	 * eth0. The symptom is deceptive: carrier up, tx_packets counting,
-	 * rx_packets stuck at exactly 0, because udhcpc binds eth0.9 while the
-	 * replies arrive labelled eth0.
+	 * Both SGMII ports are mapped because the netdev table already assigns
+	 * eth0.8/eth0.9 txPortMasks to ports 6/7, so transmit worked on either --
+	 * but ingress had no mapping and fell through to the CPU root device eth0.
+	 * The symptom is deceptive: carrier up, tx_packets counting, rx_packets
+	 * stuck at exactly 0, because udhcpc binds eth0.8 while the replies arrive
+	 * labelled eth0.
 	 *
-	 * The same mapping was previously added for SGMII0/eth0.8 on the strength
-	 * of TP-Link's WAN_PHY_PORT_SET="1:6". That 6 is a PHY address on the
-	 * ext-MDIO bus, not a switch port, and port 6 turned out to be wired to
-	 * nothing. */
+	 * This mapping was briefly moved to SGMII1/eth0.9 on the theory that port 7
+	 * was the WAN. It is not: SDS1 left the SerDes at 6189 and additionally
+	 * killed PCIe port 1, which shares its lane. */
+	change_dev_port_mapping(APOLLOPRO_SGMII0_PORT,"eth0.8");
 	change_dev_port_mapping(APOLLOPRO_SGMII1_PORT,"eth0.9");
 	#if defined(CONFIG_RTL_MULTI_PHY_ETH_WAN)
 	change_dev_port_mapping(LAN_PORT6,"ifprobe");
