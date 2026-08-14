@@ -28,6 +28,9 @@
 #include <rtk/switch.h>
 #include <rtk/mdio.h>
 #include <rtk/gpio.h>
+#include <rtk/port.h>
+#include <rtk/stat.h>
+#include <rtk/vlan.h>
 #include <rtk/acl.h>
 #include <rtk/qos.h>
 #include <rtk/rate.h>
@@ -949,6 +952,54 @@ static int32 _dal_rtl9607c_switch_phyCmd_checkBusy(void)
     return RT_ERR_TIMEOUT;
 }
 
+/* Every GPIO on the chip except 39 and 40.
+ *
+ * The RTL9607C has no hardware pin mux -- a pin's alternate function only
+ * appears once GPIO is disabled on it -- so the external MDIO bus does not
+ * physically exist until the right pins are released. Releasing 65/10 alone
+ * was not sufficient in testing; the bus only came alive when the GPIO-held
+ * pins were freed too, so something in that set gates it and we do not yet
+ * know which. Until we do, replicate exactly what worked.
+ *
+ * 39 and 40 are the PCIe resets for the two WiFi cards. Freeing them reset the
+ * board mid-sweep, which is how they came to be excluded. They are the only
+ * two pins deliberately absent from this list -- do not "complete" it.
+ *
+ * One-way by design: pins are only ever released, never put back under GPIO.
+ * Re-enabling GPIO on a pin could claim one belonging to the console UART and
+ * cost the board mid-boot with no way to see why.
+ */
+static const int PHOEBUS_FREE_PINS[] = {
+	0,1,2,3,4,5,6,7,8,9,10, 12,13,14,15,16,17,18,19,20,21,22,23,24,
+	25,26,27,28,29,30,31,32,33,34,35,36,37,38,41,42,
+	44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,
+	65,66,67,68,69
+};
+#define PHOEBUS_FREE_PINS_CNT \
+	((int)(sizeof(PHOEBUS_FREE_PINS)/sizeof(PHOEBUS_FREE_PINS[0])))
+
+/* The ext-MDIO address the boot scan actually found and powered up.
+ *
+ * Seeded with the documented value but overwritten by the scan, because the
+ * PHY answers at BOTH 0 and 6 and the scan takes the first. The power-up write
+ * goes to that address, so anything polling a different one is watching a
+ * register set nobody enabled -- which is what happened: the poller hardcoded
+ * 6, the scan powered 0, and the poller then reported link-down forever while
+ * the boot dump read the PHY perfectly through the address the prober had left
+ * configured. Power one address and poll another and this is what you get.
+ *
+ * Seeded with the literal 6 rather than PHOEBUS_EXT_WAN_PHY_ADDR because that
+ * macro is defined further down, inside the split declaration this block had
+ * to be hoisted above. Keep the two in step.
+ */
+static uint32 phoebus_ext_phy_addr = 6;
+
+/* Defined with the /proc prober further down; declared here because the
+ * boot-time bring-up runs the same code paths. */
+static void phoebus_force_port(int port);
+static void phoebus_dump_port(int port);
+static void phoebus_dump_extphy(void);
+
 static int32
 /* The WAN jack's PHY is an external one on the ext-MDIO bus, not a switch port.
  *
@@ -973,8 +1024,37 @@ static int32
  */
 #define PHOEBUS_EXT_WAN_MDIO_SET   0
 #define PHOEBUS_EXT_WAN_MDIO_PORT  0
-#define PHOEBUS_EXT_MDC_PIN        6   /* RTL9607C_SET0_MDC_PIN  */
-#define PHOEBUS_EXT_MDIO_PIN       7   /* RTL9607C_SET0_MDIO_PIN */
+/* Pins 6/7 are what ext_phy_poll.c calls set0, and they found nothing: swept
+ * across every mdio port and address, all 0xffff. The bus is on 65/10, found
+ * by the force sweep, and only answers once the GPIO-held pins have also been
+ * released -- so freeing this pair alone is not enough. See PHOEBUS_FREE_PINS.
+ */
+#define PHOEBUS_EXT_MDC_PIN        65
+#define PHOEBUS_EXT_MDIO_PIN       10
+/* The external PHY answers at both 0 and 6. 6 matches stock's phyid. */
+#define PHOEBUS_EXT_WAN_PHY_ADDR   6
+/* The WAN is switch port 7 -- SGMII1 -- and this is now measured, not inferred.
+ *
+ * With a device in the WAN jack and nothing forced on port 7, the switch's own
+ * counters read:
+ *
+ *   port 1 (LAN, cable in)   in_octets 19820   out_octets 77902   <- control
+ *   port 7 (WAN, carrier up) in_octets     0   out_octets  4470
+ *   port 6                   in_octets     0   out_octets     0
+ *   port 8                   in_octets     0   out_octets     0
+ *
+ * Port 7 was the only one of the three carrying anything, and its 4470 bytes
+ * out are the DHCP discovers sent from eth0.9. Ports 6 and 8 are wired to
+ * nothing on this board. An earlier reading of TP-Link's WAN_PHY_PORT_SET="1:6"
+ * treated that 6 as a switch port; it is a PHY address, which is also where the
+ * external PHY answers on the ext-MDIO bus. Two different sixes, and conflating
+ * them cost several flash cycles.
+ */
+#define PHOEBUS_WAN_PORT           7
+/* Kept only so the /proc prober can still be pointed at them. Neither is the
+ * WAN; see the counters above before spending time on either again. */
+#define PHOEBUS_WAN_PORT_SGMII     6
+#define PHOEBUS_WAN_PORT_RGMII     8
 #define PHOEBUS_EXT_WAN_BMCR_UP    0x1140
 #define PHOEBUS_EXT_WAN_BMCR_DOWN  0x1940
 
@@ -1068,15 +1148,19 @@ _dal_rtl9607c_switch_phyPower_set(rtk_enable_t enable)
         uint16 id1 = 0, id2 = 0, bmcr = 0;
         uint32 addr, found = 0xff;
 
-        /* Release the MDC/MDIO pins from GPIO first -- without this the bus
-         * does not physically exist and every address reads 0xffff, which is
-         * exactly what the first attempt at this saw. */
-        if ((mret = rtk_gpio_state_set(PHOEBUS_EXT_MDC_PIN, DISABLED)) != RT_ERR_OK)
-            printk("PHOEBUS-PHY: gpio release MDC pin %d failed (%d)\n",
-                   PHOEBUS_EXT_MDC_PIN, mret);
-        if ((mret = rtk_gpio_state_set(PHOEBUS_EXT_MDIO_PIN, DISABLED)) != RT_ERR_OK)
-            printk("PHOEBUS-PHY: gpio release MDIO pin %d failed (%d)\n",
-                   PHOEBUS_EXT_MDIO_PIN, mret);
+        /* Release the pins from GPIO first -- without this the bus does not
+         * physically exist and every address reads 0xffff, which is exactly
+         * what the first attempt at this saw. Freeing the MDC/MDIO pair alone
+         * is not enough either; see PHOEBUS_FREE_PINS. */
+        {
+            int pi;
+
+            for (pi = 0; pi < PHOEBUS_FREE_PINS_CNT; pi++)
+                rtk_gpio_state_set(PHOEBUS_FREE_PINS[pi], DISABLED);
+            printk("PHOEBUS-PHY: released %d GPIOs (39/40 held: PCIe resets)\n",
+                   PHOEBUS_FREE_PINS_CNT);
+        }
+        (void)mret;
 
         if ((mret = rtk_mdio_init()) != RT_ERR_OK)
         {
@@ -1117,6 +1201,8 @@ _dal_rtl9607c_switch_phyPower_set(rtk_enable_t enable)
             {
                 rtk_mdio_cfg_set(PHOEBUS_EXT_WAN_MDIO_SET,
                                  PHOEBUS_EXT_WAN_MDIO_PORT, found, MDIO_FMT_C22);
+                /* Tell the poller which address is the live one. */
+                phoebus_ext_phy_addr = found;
                 if (rtk_mdio_c22_read(0, &bmcr) != RT_ERR_OK)
                     bmcr = 0xffff;
 
@@ -1127,6 +1213,33 @@ _dal_rtl9607c_switch_phyPower_set(rtk_enable_t enable)
 
                 printk("PHOEBUS-PHY: ext WAN PHY addr %u BMCR 0x%04x -> 0x%04x (power up)\n",
                        found, bmcr, PHOEBUS_EXT_WAN_BMCR_UP);
+
+                /* No forcing here any more. The WAN is port 7, and its speed is
+                 * whatever the copper side negotiates -- 100M on the house
+                 * wiring, gigabit off the roof. Pinning it at boot is how this
+                 * port stayed dead: the MAC sat at 1000M while the PHY had
+                 * settled at 100M, and nothing crossed. phoebus_wan_poll_thread
+                 * owns port 7's ability from here on.
+                 *
+                 * Ports 6 and 8 are not forced either. Both measured completely
+                 * idle -- zero in AND zero out -- with a device in the WAN jack,
+                 * so nothing is attached to them on this board. */
+
+                /* Autoneg needs seconds, not milliseconds. An earlier 200ms
+                 * settle read link=down every time and sent this whole effort
+                 * chasing faults that were not there. */
+                osal_time_mdelay(3000);
+
+                printk("PHOEBUS-DIAG: ==== boot dump ====\n");
+                phoebus_dump_extphy();
+                phoebus_dump_port(PHOEBUS_WAN_PORT);
+                /* Control: port 1 is LAN jack eth0.3. It has to be a port with
+                 * a cable in it, or its zeroes prove nothing. The first version
+                 * of this dump used port 3 -- a jack with nothing plugged in --
+                 * so the "control" read all zeros exactly like the failure it
+                 * was supposed to distinguish from. */
+                phoebus_dump_port(1);
+                printk("PHOEBUS-DIAG: ==== boot dump end ====\n");
             }
         }
     }
@@ -4984,10 +5097,371 @@ static int phoebus_extmdio_probe(int set, int mdc, int mdio)
 	return found;
 }
 
+/* RTL8211F/FS paged register access over the external MDIO bus.
+ *
+ * Register 31 is the page-select on every page, so a paged read is
+ * write(31,page) / read(reg) / write(31,0). Page 0 is the IEEE space
+ * (BMCR/BMSR/PHYID). The ones worth reading here are 0xa42/0xa43 (PHY-specific
+ * status, copper side) and 0xd08/0xdc0, which on the FS carry the SGMII/SerDes
+ * side -- the PHY-to-switch link, which neither end reports to us otherwise.
+ *
+ * Restoring page 0 afterwards is not politeness. Every other rtk_mdio_c22_read
+ * caller in this driver assumes page 0, so a page left selected turns their
+ * BMSR read into whatever happens to sit at that offset on the stale page --
+ * silently, with a plausible-looking value.
+ */
+static int32 phoebus_phy_page_read(uint16 page, uint8 reg, uint16 *val)
+{
+	int32 r;
+
+	if ((r = rtk_mdio_c22_write(31, page)) != RT_ERR_OK)
+		return r;
+	r = rtk_mdio_c22_read(reg, val);
+	rtk_mdio_c22_write(31, 0);
+	return r;
+}
+
+static int32 phoebus_phy_page_write(uint16 page, uint8 reg, uint16 val)
+{
+	int32 r;
+
+	if ((r = rtk_mdio_c22_write(31, page)) != RT_ERR_OK)
+		return r;
+	r = rtk_mdio_c22_write(reg, val);
+	rtk_mdio_c22_write(31, 0);
+	return r;
+}
+
+/* Everything we can learn about one switch port without touching it.
+ *
+ * Split out because it is called from both the "diag" command and the
+ * boot-time dump, and because the interesting comparison is always between
+ * two ports -- a candidate WAN port against a LAN port known to pass traffic.
+ * A counter is only meaningful next to a control.
+ */
+static void phoebus_dump_port(int port)
+{
+	static const struct { int idx; const char *name; } c[] = {
+		{ IF_IN_OCTETS_INDEX,          "in_octets"    },
+		{ IF_IN_UCAST_PKTS_INDEX,      "in_ucast"     },
+		{ IF_IN_MULTICAST_PKTS_INDEX,  "in_mcast"     },
+		{ IF_IN_BROADCAST_PKTS_INDEX,  "in_bcast"     },
+		{ IF_IN_DISCARDS_INDEX,        "in_discards"  },
+		{ IF_OUT_OCTETS_INDEX,         "out_octets"   },
+		{ IF_OUT_DISCARDS_INDEX,       "out_discards" },
+		{ DOT3_STATS_FCS_ERRORS_INDEX, "fcs_errors"   },
+	};
+	rtk_port_linkStatus_t link = PORT_LINKDOWN;
+	rtk_port_speed_t spd = 0;
+	rtk_port_duplex_t dup = 0;
+	int i, ok_link, ok_sd;
+	uint64 v;
+
+	ok_link = (rtk_port_link_get(port, &link) == RT_ERR_OK);
+	ok_sd   = (rtk_port_speedDuplex_get(port, &spd, &dup) == RT_ERR_OK);
+
+	printk("PHOEBUS-DIAG: port %-2d link=%s speed=%s duplex=%s\n", port,
+	       !ok_link ? "?" : (link == PORT_LINKUP ? "UP" : "down"),
+	       !ok_sd ? "?" : (spd == PORT_SPEED_1000M ? "1000M" :
+	                       spd == PORT_SPEED_100M  ? "100M"  : "10M"),
+	       !ok_sd ? "?" : (dup == PORT_FULL_DUPLEX ? "full" : "half"));
+
+	for (i = 0; i < (int)(sizeof(c)/sizeof(c[0])); i++) {
+		v = 0;
+		if (rtk_stat_port_get(port, c[i].idx, &v) != RT_ERR_OK) {
+			printk("PHOEBUS-DIAG: port %-2d %-13s <read failed>\n",
+			       port, c[i].name);
+			continue;
+		}
+		printk("PHOEBUS-DIAG: port %-2d %-13s %llu\n", port, c[i].name,
+		       (unsigned long long)v);
+	}
+}
+
+/* Dump the external PHY: IEEE page plus the pages that carry the SerDes side.
+ *
+ * The registers are printed raw rather than decoded because we do not yet know
+ * which chip answers -- an F and an FS report the same PHY id (001c:c916) and
+ * differ only in what these pages mean. Decoding would bake in the assumption
+ * the dump exists to test.
+ */
+static void phoebus_dump_extphy(void)
+{
+	static const uint16 pages[] = { 0x0000, 0x0a42, 0x0a43, 0x0d08, 0x0dc0 };
+	uint16 v;
+	int p, r;
+
+	for (p = 0; p < (int)(sizeof(pages)/sizeof(pages[0])); p++) {
+		for (r = 0; r < 32; r += 8) {
+			uint16 w[8];
+			int i, any = 0;
+
+			for (i = 0; i < 8; i++) {
+				w[i] = 0xffff;
+				if (phoebus_phy_page_read(pages[p], r + i, &v) == RT_ERR_OK) {
+					w[i] = v;
+					if (v != 0xffff)
+						any = 1;
+				}
+			}
+			/* An all-ones row means the page did not answer -- an
+			 * unimplemented page floats the bus high. Printing those
+			 * would pad the log with 200 lines of ffff and bury the
+			 * rows that carry something. */
+			if (!any && pages[p] != 0)
+				continue;
+			printk("PHOEBUS-PHY: page %04x reg %02d-%02d: "
+			       "%04x %04x %04x %04x %04x %04x %04x %04x\n",
+			       pages[p], r, r + 7,
+			       w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+		}
+	}
+}
+
+/* Force a switch port to 1000/full/link-up.
+ *
+ * Read-modify-write, exactly as stock's ext_phy_poll.c config_mac_speed() does.
+ * Building this struct from a memset(0) instead clobbers linkFib1g, masterMod,
+ * nwayAbility and the LPI fields with zeros -- carrier still comes up because
+ * linkStatus is right, but the rest of the MAC config is trampled and nothing
+ * is received. That failure looks exactly like a dead cable.
+ *
+ * Note this is a software assertion about the MAC. It does not prove the
+ * SerDes lanes underneath are running, which is precisely why the diagnostics
+ * read the PHY's own view as well.
+ */
+static void phoebus_force_port(int port)
+{
+	rtk_port_macAbility_t ab;
+	int32 r1, r2;
+
+	osal_memset(&ab, 0, sizeof(ab));
+	r1 = rtk_port_macForceAbility_get(port, &ab);
+	printk("PHOEBUS-FORCE: port %d before: get=%d speed=%d duplex=%d link=%d "
+	       "txFc=%d rxFc=%d nway=%d fib1g=%d\n",
+	       port, r1, ab.speed, ab.duplex, ab.linkStatus,
+	       ab.txFc, ab.rxFc, ab.nwayAbility, ab.linkFib1g);
+
+	ab.speed      = PORT_SPEED_1000M;
+	ab.duplex     = PORT_FULL_DUPLEX;
+	ab.linkStatus = PORT_LINKUP;
+	ab.txFc       = ENABLED;
+	ab.rxFc       = ENABLED;
+
+	r1 = rtk_port_macForceAbility_set(port, ab);
+	r2 = rtk_port_macForceAbilityState_set(port, ENABLED);
+	printk("PHOEBUS-FORCE: port %d 1000/full link-up forced (ability=%d state=%d)\n",
+	       port, r1, r2);
+}
+
+/* ------------------------------------------------------------------------
+ * External WAN PHY link poller.
+ *
+ * The switch's SGMII1 MAC does not learn its speed from the PHY on this board.
+ * It sits at whatever macForceAbility last set, and if that disagrees with what
+ * the copper side negotiated, nothing crosses -- measured directly: copper up
+ * at 100M full (PHYSR page 0xa43 reg 0x1a = 0x311c), port 7 forced to 1000M,
+ * the PHY's own SerDes-side status stuck at 0x6189 with autoneg incomplete, and
+ * port 7 in_octets frozen at 0 while its carrier read up the whole time.
+ *
+ * Hardcoding 100M would fix today's link and break the next one. The house
+ * wiring is 100M but the roof uplink is gigabit, so the speed genuinely changes
+ * depending on what this port is plugged into.
+ *
+ * So poll, which is what the vendor does too -- their module is literally named
+ * ext_phy_polling and its config_mac_speed() is the function this file's force
+ * path was copied from. Re-derive the state every 500ms and push it into the
+ * MAC whenever it changes.
+ *
+ * Deviation from the vendor: they act only on the link up/down edge, so a
+ * renegotiation to a different speed that never drops link would be missed.
+ * This tracks the decoded state instead and re-applies on any change, which
+ * costs one extra comparison and removes a whole class of "worked yesterday".
+ * ------------------------------------------------------------------------ */
+#define PHOEBUS_MII_BMCR        0   /* control            */
+#define PHOEBUS_MII_BMSR        1   /* status             */
+#define PHOEBUS_MII_ANAR        4   /* our advertisement  */
+#define PHOEBUS_MII_ANLPAR      5   /* partner's          */
+#define PHOEBUS_MII_GCR         9   /* 1000BASE-T control */
+#define PHOEBUS_MII_GSR        10   /* 1000BASE-T status  */
+
+#define PHOEBUS_BMSR_LINK      (1 << 2)
+#define PHOEBUS_BMCR_ANEG      (1 << 12)
+#define PHOEBUS_BMCR_DUPLEX    (1 << 8)
+#define PHOEBUS_BMCR_SPD_LSB   (1 << 13)   /* reg0.13 */
+#define PHOEBUS_BMCR_SPD_MSB   (1 << 6)    /* reg0.6  */
+#define PHOEBUS_GCR_1000_FULL  (1 << 9)
+#define PHOEBUS_GSR_1000_FULL  (1 << 11)
+#define PHOEBUS_GSR_1000_HALF  (1 << 10)
+#define PHOEBUS_AN_100_FULL    (1 << 8)
+#define PHOEBUS_AN_100_HALF    (1 << 7)
+#define PHOEBUS_AN_10_FULL     (1 << 6)
+#define PHOEBUS_AN_10_HALF     (1 << 5)
+
+enum {
+	PHOEBUS_PS_DOWN = 0,
+	PHOEBUS_PS_1000F, PHOEBUS_PS_1000H,
+	PHOEBUS_PS_100F,  PHOEBUS_PS_100H,
+	PHOEBUS_PS_10F,   PHOEBUS_PS_10H,
+	PHOEBUS_PS_END
+};
+
+static const char *phoebus_ps_str[PHOEBUS_PS_END] = {
+	"down", "1000F", "1000H", "100F", "100H", "10F", "10H"
+};
+static const rtk_port_speed_t phoebus_ps_speed[PHOEBUS_PS_END] = {
+	PORT_SPEED_10M, PORT_SPEED_1000M, PORT_SPEED_1000M,
+	PORT_SPEED_100M, PORT_SPEED_100M, PORT_SPEED_10M, PORT_SPEED_10M
+};
+static const rtk_port_duplex_t phoebus_ps_duplex[PHOEBUS_PS_END] = {
+	PORT_HALF_DUPLEX, PORT_FULL_DUPLEX, PORT_HALF_DUPLEX,
+	PORT_FULL_DUPLEX, PORT_HALF_DUPLEX, PORT_FULL_DUPLEX, PORT_HALF_DUPLEX
+};
+
+/* Decode the PHY's copper-side state. Returns a PHOEBUS_PS_* value, or -1 if
+ * the bus did not answer (no PHY, or the MDIO pins are not free yet). */
+static int phoebus_wan_state_get(void)
+{
+	uint16 bmsr = 0, bmcr = 0, anar = 0, anlp = 0, gcr = 0, gsr = 0;
+
+	if (rtk_mdio_cfg_set(PHOEBUS_EXT_WAN_MDIO_SET, PHOEBUS_EXT_WAN_MDIO_PORT,
+	                     phoebus_ext_phy_addr, MDIO_FMT_C22) != RT_ERR_OK)
+		return -1;
+
+	/* BMSR link status is latch-low: it reports 0 if the link has dropped at
+	 * any point since the previous read, and only the SECOND read shows the
+	 * current state. The boot-time dump in this file reads each register once
+	 * and consequently reported link=down on a link that was up -- do not
+	 * "simplify" this dummy read away. The vendor's poller does the same. */
+	if (rtk_mdio_c22_read(PHOEBUS_MII_BMSR, &bmsr) != RT_ERR_OK)
+		return -1;
+	if (rtk_mdio_c22_read(PHOEBUS_MII_BMSR, &bmsr) != RT_ERR_OK)
+		return -1;
+	/* Reject BOTH float values. An unpopulated MDIO address floats high and
+	 * reads 0xffff, but a present-yet-unpowered one reads 0x0000 -- and a
+	 * valid BMSR always has capability bits set, so zero is never real. The
+	 * first version only rejected 0xffff, so polling the wrong address
+	 * decoded as a permanent, entirely silent "link down". */
+	if (bmsr == 0xffff || bmsr == 0x0000)
+		return -1;
+
+	if (!(bmsr & PHOEBUS_BMSR_LINK))
+		return PHOEBUS_PS_DOWN;
+
+	if (rtk_mdio_c22_read(PHOEBUS_MII_BMCR, &bmcr) != RT_ERR_OK)
+		return -1;
+	if (rtk_mdio_c22_read(PHOEBUS_MII_ANAR, &anar) != RT_ERR_OK)
+		return -1;
+
+	if (!(bmcr & PHOEBUS_BMCR_ANEG)) {
+		/* Forced mode: speed is reg0.6/reg0.13, duplex reg0.8. */
+		if ((bmcr & PHOEBUS_BMCR_SPD_MSB) && (bmcr & PHOEBUS_BMCR_SPD_LSB))
+			return -1;                       /* reserved encoding */
+		if (bmcr & PHOEBUS_BMCR_SPD_MSB)
+			return PHOEBUS_PS_1000F;
+		if (bmcr & PHOEBUS_BMCR_SPD_LSB)
+			return (bmcr & PHOEBUS_BMCR_DUPLEX) ? PHOEBUS_PS_100F
+			                                    : PHOEBUS_PS_100H;
+		return (bmcr & PHOEBUS_BMCR_DUPLEX) ? PHOEBUS_PS_10F : PHOEBUS_PS_10H;
+	}
+
+	/* Autoneg: the result is what BOTH sides advertised. */
+	if (rtk_mdio_c22_read(PHOEBUS_MII_GCR, &gcr) != RT_ERR_OK)
+		return -1;
+	if (rtk_mdio_c22_read(PHOEBUS_MII_GSR, &gsr) != RT_ERR_OK)
+		return -1;
+	if (rtk_mdio_c22_read(PHOEBUS_MII_ANLPAR, &anlp) != RT_ERR_OK)
+		return -1;
+
+	if ((gcr & PHOEBUS_GCR_1000_FULL) && (gsr & PHOEBUS_GSR_1000_FULL))
+		return PHOEBUS_PS_1000F;
+	if ((gcr & PHOEBUS_GCR_1000_FULL) && (gsr & PHOEBUS_GSR_1000_HALF))
+		return PHOEBUS_PS_1000H;
+	if (anar & anlp & PHOEBUS_AN_100_FULL)
+		return PHOEBUS_PS_100F;
+	if (anar & anlp & PHOEBUS_AN_100_HALF)
+		return PHOEBUS_PS_100H;
+	if (anar & anlp & PHOEBUS_AN_10_FULL)
+		return PHOEBUS_PS_10F;
+	if (anar & anlp & PHOEBUS_AN_10_HALF)
+		return PHOEBUS_PS_10H;
+
+	return -1;
+}
+
+/* Push a decoded state into the WAN port's MAC. */
+static void phoebus_wan_apply(int state)
+{
+	rtk_port_macAbility_t ab;
+
+	osal_memset(&ab, 0, sizeof(ab));
+	/* Read-modify-write. Building this from a zeroed struct clobbers
+	 * linkFib1g, masterMod, nwayAbility and the LPI fields, which leaves
+	 * carrier up and traffic dead -- a failure that looks exactly like a bad
+	 * cable. */
+	if (rtk_port_macForceAbility_get(PHOEBUS_WAN_PORT, &ab) != RT_ERR_OK)
+		return;
+
+	if (state == PHOEBUS_PS_DOWN) {
+		ab.linkStatus = PORT_LINKDOWN;
+		rtk_port_macForceAbility_set(PHOEBUS_WAN_PORT, ab);
+		return;
+	}
+
+	ab.speed      = phoebus_ps_speed[state];
+	ab.duplex     = phoebus_ps_duplex[state];
+	ab.linkStatus = PORT_LINKUP;
+	ab.txFc       = ENABLED;
+	ab.rxFc       = ENABLED;
+
+	rtk_port_macForceAbility_set(PHOEBUS_WAN_PORT, ab);
+	rtk_port_macForceAbilityState_set(PHOEBUS_WAN_PORT, ENABLED);
+}
+
+static struct task_struct *phoebus_wan_poll_task;
+static int phoebus_wan_last_state = -2;   /* -2: nothing applied yet */
+static unsigned int phoebus_wan_fail_ticks;
+
+static int phoebus_wan_poll_thread(void *data)
+{
+	while (!kthread_should_stop()) {
+		int st;
+
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule_timeout(HZ / 2);
+		if (kthread_should_stop())
+			break;
+
+		st = phoebus_wan_state_get();
+		if (st < 0) {
+			/* Say so, rate-limited. A poller that goes quiet because it
+			 * cannot read the bus looks exactly like a poller with nothing
+			 * to report, and the previous version spent a whole boot in that
+			 * state while the log stayed clean. Once every ~30s is enough to
+			 * tell "idle" from "blind" without flooding the console. */
+			if (++phoebus_wan_fail_ticks % 60 == 1)
+				printk("PHOEBUS-WAN: cannot read PHY at ext-mdio addr %u "
+				       "(%u failed polls)\n",
+				       phoebus_ext_phy_addr, phoebus_wan_fail_ticks);
+			continue;
+		}
+		phoebus_wan_fail_ticks = 0;
+
+		if (st != phoebus_wan_last_state) {
+			phoebus_wan_apply(st);
+			printk("PHOEBUS-WAN: port %d link %s -> MAC %s\n",
+			       PHOEBUS_WAN_PORT, phoebus_ps_str[st],
+			       st == PHOEBUS_PS_DOWN ? "link-down" : phoebus_ps_str[st]);
+			phoebus_wan_last_state = st;
+		}
+	}
+	return 0;
+}
+
 static ssize_t phoebus_extmdio_write(struct file *file, const char __user *buffer,
                                      size_t count, loff_t *off)
 {
-	char tmp[32] = {0};
+	char tmp[64] = {0};
 	int len = (count > sizeof(tmp) - 1) ? sizeof(tmp) - 1 : count;
 	int set = 0, mdc = 6, mdio = 7;
 
@@ -4998,6 +5472,434 @@ static ssize_t phoebus_extmdio_write(struct file *file, const char __user *buffe
 	 * bus. TP-Link's network_arch.sh puts the WAN on phyport 6, which the GPHY
 	 * power loop (0..5) skips and which no probe has ever addressed -- every
 	 * hal_miim test so far used port 8. */
+	/* "sweep [first_mdc] [last_mdc]" brute-forces the MDC/MDIO pin pair.
+	 *
+	 * TP-Link's network_arch.sh puts the WAN on phyport 6, and a MIIM scan
+	 * shows no PHY there, so its PHY is external. ext_phy_poll.c documents
+	 * set0=pins 6/7 and set1=pins 12/10; both were swept across every mdio
+	 * port and address and found nothing, so this board wires MDC/MDIO
+	 * somewhere else. The chip has 66 GPIOs (0-10, 12-42, 44-69) and the GPIO
+	 * application note says there is no hardware mux -- a pin's alternate
+	 * function only appears once GPIO is disabled on it.
+	 *
+	 * Deliberately one-way: pins are only ever released to their alternate
+	 * function, never put back under GPIO. Re-enabling GPIO on a pin could
+	 * claim one belonging to the console UART and cost us the board mid-sweep.
+	 *
+	 * The pair is printed BEFORE it is tested, so if freeing some pin wedges
+	 * the machine the last line on the console names the culprit. Range args
+	 * let the sweep be resumed past a pin that turns out to be hostile.
+	 */
+	/* "gpiostate" -- read-only census of which pins are under GPIO control.
+	 *
+	 * A pin whose GPIO function is DISABLED is already handed to its alternate
+	 * function, which is where a hardware-strapped or U-Boot-configured
+	 * MDC/MDIO pair would already be. Those pins are also safe to probe: asking
+	 * to disable GPIO on a pin that is already disabled changes nothing.
+	 *
+	 * Blind-sweeping instead reset the board inside the first 20 pins, because
+	 * freeing a pin hands it to whatever the silicon assigns and something in
+	 * that range was load-bearing. Read first, then only touch what is already
+	 * free.
+	 */
+	/* "up <mdc> <mdio> <addr>" -- bring the external WAN PHY out of power-down.
+	 *
+	 * Found by the force sweep: an RTL8211F (PHY id 001c:c916, distinct from
+	 * the internal LAN GPHYs at 001c:c981) answering at MDC=65 / MDIO=10,
+	 * addresses 0 and 6.
+	 *
+	 * Freeing 65 and 10 alone is not sufficient -- the non-force sweep covered
+	 * that exact pair over already-free pins and saw nothing. The bus only came
+	 * alive once force mode had also freed the GPIO-held pins, so one of those
+	 * gates it. Until we know which, replicate what worked: free everything
+	 * except the two PCIe resets. 39/40 hold the WiFi cards and freeing them
+	 * reset the board.
+	 */
+	if (!strncmp(tmp, "up", 2) && tmp[2] == ' ') {
+		int mdc = PHOEBUS_EXT_MDC_PIN, mdio = PHOEBUS_EXT_MDIO_PIN;
+		int addr = PHOEBUS_EXT_WAN_PHY_ADDR, i;
+		uint16 bmcr = 0xffff, id1 = 0, id2 = 0, stat = 0;
+
+		sscanf(tmp + 3, "%d %d %d", &mdc, &mdio, &addr);
+
+		for (i = 0; i < PHOEBUS_FREE_PINS_CNT; i++)
+			rtk_gpio_state_set(PHOEBUS_FREE_PINS[i], DISABLED);
+
+		if (rtk_mdio_init() != RT_ERR_OK) {
+			printk("extmdio-up: rtk_mdio_init failed\n");
+			return count;
+		}
+		if (rtk_mdio_cfg_set(0, 0, addr, MDIO_FMT_C22) != RT_ERR_OK) {
+			printk("extmdio-up: cfg_set(addr %d) failed\n", addr);
+			return count;
+		}
+
+		rtk_mdio_c22_read(2, &id1);
+		rtk_mdio_c22_read(3, &id2);
+		rtk_mdio_c22_read(0, &bmcr);
+		rtk_mdio_c22_read(1, &stat);
+		printk("extmdio-up: before: mdc=%d mdio=%d addr=%d id=%04x:%04x BMCR=%04x BMSR=%04x link=%s\n",
+		       mdc, mdio, addr, id1, id2, bmcr, stat,
+		       (stat != 0xffff && (stat & 0x0004)) ? "UP" : "down");
+
+		/* Reset + autoneg + full duplex + 1000M, the value the working LAN
+		 * PHYs report. BIT(15) is a PHY reset; it self-clears. */
+		rtk_mdio_c22_write(0, 0x8000);
+		osal_time_mdelay(50);
+		rtk_mdio_c22_write(0, 0x1140);
+
+		/* Autonegotiation takes 2-4 seconds on copper gigabit. Reading link
+		 * state 200ms after kicking it off -- as the first version did -- can
+		 * only ever report "down". Poll for up to 6s and report when it
+		 * settles, so a genuine failure is distinguishable from impatience. */
+		for (i = 0; i < 24; i++) {
+			osal_time_mdelay(250);
+			stat = 0xffff;
+			if (rtk_mdio_c22_read(1, &stat) != RT_ERR_OK)
+				continue;
+			if (stat != 0xffff && (stat & 0x0024) == 0x0024)
+				break;                  /* link up + autoneg complete */
+		}
+		rtk_mdio_c22_read(0, &bmcr);
+		printk("extmdio-up: after %dms: BMCR=%04x BMSR=%04x link=%s autoneg_done=%s\n",
+		       (i + 1) * 250, bmcr, stat,
+		       (stat != 0xffff && (stat & 0x0004)) ? "UP" : "down",
+		       (stat != 0xffff && (stat & 0x0020)) ? "yes" : "no");
+		return count;
+	}
+
+	/* "force <port>" -- force a switch port's MAC link up at 1000/full.
+	 *
+	 * The WAN PHY (external RTL8211FS on the ext-MDIO bus) negotiates fine with
+	 * its link partner once powered -- the partner's LEDs come on -- but the
+	 * switch never learns about it: nothing polls that PHY, which is exactly
+	 * why stock ships an ext_phy_polling kthread. So port 6's MAC sits with no
+	 * link and eth0.8 stays at carrier 0 with zero packets.
+	 *
+	 * Forcing the MAC is the standard answer for a PHY the switch cannot see.
+	 * Both halves are implemented for this chip in dal_rtl9607c_mapper.c.
+	 */
+	if (!strncmp(tmp, "force", 5) && tmp[5] == ' ') {
+		int port = PHOEBUS_WAN_PORT_SGMII;
+
+		sscanf(tmp + 6, "%d", &port);
+		phoebus_force_port(port);
+		return count;
+	}
+
+	/* "mib <port>" -- per-port switch MAC counters.
+	 *
+	 * Distinguishes two very different failures that look identical from the
+	 * netdev: eth0.8 shows carrier with rx_packets stuck at 0 and no errors.
+	 * Either the SGMII link between port 6 and the external PHY is not carrying
+	 * frames at all (the port MAC counts nothing), or frames do arrive and the
+	 * switch discards them before the CPU (in-octets climb, discards climb).
+	 * Guessing between those two has already cost several flash cycles.
+	 */
+	/* "rd <page> <reg>" / "wr <page> <reg> <val>" -- paged access to the
+	 * external PHY. Values are hex, no 0x prefix needed.
+	 *
+	 * This is what decides RTL8211F versus RTL8211FS, which the PHY id cannot:
+	 * both answer 001c:c916. Only the FS has a SerDes, so only the FS answers
+	 * meaningfully on the SGMII pages -- and if it does, its view of the
+	 * PHY-to-switch link is the one measurement neither the switch counters
+	 * nor the netdev can give us.
+	 */
+	if (!strncmp(tmp, "rd", 2) && tmp[2] == ' ') {
+		unsigned int page = 0, reg = 0;
+		uint16 v = 0;
+		int32 r;
+
+		sscanf(tmp + 3, "%x %x", &page, &reg);
+		r = phoebus_phy_page_read((uint16)page, (uint8)reg, &v);
+		printk("PHOEBUS-PHY: rd page %04x reg %02x = %04x (%s)\n",
+		       page, reg, v, r == RT_ERR_OK ? "ok" : "FAILED");
+		return count;
+	}
+
+	if (!strncmp(tmp, "wr", 2) && tmp[2] == ' ') {
+		unsigned int page = 0, reg = 0, val = 0;
+		int32 r;
+
+		sscanf(tmp + 3, "%x %x %x", &page, &reg, &val);
+		r = phoebus_phy_page_write((uint16)page, (uint8)reg, (uint16)val);
+		printk("PHOEBUS-PHY: wr page %04x reg %02x = %04x (%s)\n",
+		       page, reg, val, r == RT_ERR_OK ? "ok" : "FAILED");
+		return count;
+	}
+
+	if (!strncmp(tmp, "phydump", 7)) {
+		phoebus_dump_extphy();
+		return count;
+	}
+
+	/* "sds <num> <mode>" -- configure a LAN SerDes.
+	 *
+	 * num 1 is SDS1, which the vendor's own _rtl9607c_lan_sds1_modeV3_set
+	 * confirms is port 7: it force-link-downs port 7 by literal number before
+	 * touching the SerDes. mode is rtk_port_sds_mode_t:
+	 *
+	 *   1 FIBER_1G   2 SGMII_PHY   3 SGMII_MAC   4 HSGMII_PHY   5 HSGMII_MAC
+	 *
+	 * Exposed as a command rather than only wired into init because SGMII_PHY
+	 * and SGMII_MAC share a code path in the DAL (both set CFG_SDS_MODE=0x2)
+	 * and differ only in what the link partner is expected to drive. Which one
+	 * this board wants is not documented anywhere we have, and finding out by
+	 * rebuilding and reflashing for each guess costs a TFTP cycle apiece.
+	 */
+	if (!strncmp(tmp, "sds", 3) && tmp[3] == ' ') {
+		unsigned int num = 1, mode = LAN_SDS_MODE_SGMII_MAC;
+		uint8 before = 0xff, after = 0xff;
+		int32 r;
+
+		sscanf(tmp + 4, "%u %u", &num, &mode);
+		rtk_port_serdesMode_get((uint8)num, &before);
+		r = rtk_port_serdesMode_set((uint8)num, (uint8)mode);
+		rtk_port_serdesMode_get((uint8)num, &after);
+		printk("PHOEBUS-SDS: sds%u mode %u -> %u (set=%d, reads back %u)\n",
+		       num, before, mode, r, after);
+		return count;
+	}
+
+	/* "nway <num> <cfg>" -- 0 AUTO (in-band autoneg runs), 1 FORCE. */
+	if (!strncmp(tmp, "nway", 4) && tmp[4] == ' ') {
+		unsigned int num = 1, cfg = LAN_SDS_NWAY_AUTO;
+		uint8 before = 0xff, after = 0xff;
+		int32 r;
+
+		sscanf(tmp + 5, "%u %u", &num, &cfg);
+		rtk_port_serdesNWay_get((uint8)num, &before);
+		r = rtk_port_serdesNWay_set((uint8)num, (uint8)cfg);
+		rtk_port_serdesNWay_get((uint8)num, &after);
+		printk("PHOEBUS-SDS: sds%u nway %u -> %u (set=%d, reads back %u)\n",
+		       num, before, cfg, r, after);
+		return count;
+	}
+
+	/* "diag" -- every port, the external PHY, and VLAN membership in one shot.
+	 *
+	 * Deliberately dumps ALL ports rather than the one under suspicion. Every
+	 * wrong turn on this board came from reading a counter with nothing to
+	 * compare it against: rx_packets=0 on a port means nothing until a working
+	 * LAN port is printed beside it showing what a live port looks like.
+	 */
+	if (!strncmp(tmp, "diag", 4)) {
+		rtk_portmask_t mem, untag;
+		int p;
+
+		printk("PHOEBUS-DIAG: ==== ports ====\n");
+		for (p = 0; p <= 10; p++)
+			phoebus_dump_port(p);
+
+		printk("PHOEBUS-DIAG: ==== vlan membership ====\n");
+		for (p = 1; p <= 9; p++) {
+			memset(&mem, 0, sizeof(mem));
+			memset(&untag, 0, sizeof(untag));
+			if (rtk_vlan_port_get(p, &mem, &untag) != RT_ERR_OK)
+				continue;
+			if (!mem.bits[0])
+				continue;
+			printk("PHOEBUS-DIAG: vid %-2d member=0x%08x untag=0x%08x\n",
+			       p, mem.bits[0], untag.bits[0]);
+		}
+
+		printk("PHOEBUS-DIAG: ==== external phy ====\n");
+		phoebus_dump_extphy();
+		printk("PHOEBUS-DIAG: ==== end ====\n");
+		return count;
+	}
+
+	if (!strncmp(tmp, "mib", 3) && tmp[3] == ' ') {
+		static const struct { int idx; const char *name; } c[] = {
+			{ IF_IN_OCTETS_INDEX,            "in_octets"    },
+			{ IF_IN_UCAST_PKTS_INDEX,        "in_ucast"     },
+			{ IF_IN_MULTICAST_PKTS_INDEX,    "in_mcast"     },
+			{ IF_IN_BROADCAST_PKTS_INDEX,    "in_bcast"     },
+			{ IF_IN_DISCARDS_INDEX,          "in_discards"  },
+			{ IF_OUT_OCTETS_INDEX,           "out_octets"   },
+			{ IF_OUT_DISCARDS_INDEX,         "out_discards" },
+			{ DOT3_STATS_FCS_ERRORS_INDEX,   "fcs_errors"   },
+		};
+		int port = 6, i;
+		uint64 v;
+
+		sscanf(tmp + 4, "%d", &port);
+		for (i = 0; i < (int)(sizeof(c)/sizeof(c[0])); i++) {
+			v = 0;
+			if (rtk_stat_port_get(port, c[i].idx, &v) != RT_ERR_OK) {
+				printk("mib: port %d %-13s <read failed>\n", port, c[i].name);
+				continue;
+			}
+			printk("mib: port %d %-13s %llu\n", port, c[i].name,
+			       (unsigned long long)v);
+		}
+		return count;
+	}
+
+	if (!strncmp(tmp, "gpiostate", 9)) {
+		static const int pins[] = {
+			0,1,2,3,4,5,6,7,8,9,10, 12,13,14,15,16,17,18,19,20,21,22,23,24,
+			25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,
+			44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,
+			65,66,67,68,69
+		};
+		const int npins = sizeof(pins) / sizeof(pins[0]);
+		rtk_enable_t st;
+		int i, nfree = 0;
+		char buf[128];
+		int len = 0;
+
+		printk("gpiostate: pins NOT under GPIO (already alternate-function):\n");
+		for (i = 0; i < npins; i++) {
+			st = ENABLED;
+			if (rtk_gpio_state_get(pins[i], &st) != RT_ERR_OK)
+				continue;
+			if (st == DISABLED) {
+				nfree++;
+				len += scnprintf(buf + len, sizeof(buf) - len, "%d ", pins[i]);
+				if (len > 100) { printk("gpiostate:   %s\n", buf); len = 0; buf[0] = 0; }
+			}
+		}
+		if (len) printk("gpiostate:   %s\n", buf);
+		printk("gpiostate: %d of %d pins are free for alternate functions\n",
+		       nfree, npins);
+
+		/* Profile the pins still under GPIO. These are the only remaining
+		 * candidates for the WAN PHY's MDC/MDIO -- the 3080-pair sweep over
+		 * already-free pins found nothing -- but freeing one of them reset the
+		 * board once already, so rank them before touching any.
+		 *
+		 * An output driving a level is holding something (enable, reset, power);
+		 * releasing it to an alternate function drops that line. An input is a
+		 * strap or a button and is far more likely to be harmless. */
+		printk("gpiostate: pins UNDER GPIO control (risky to free):\n");
+		for (i = 0; i < npins; i++) {
+			rtk_gpio_mode_t md = 0;
+			uint32 dat = 0;
+
+			st = ENABLED;
+			if (rtk_gpio_state_get(pins[i], &st) != RT_ERR_OK || st != ENABLED)
+				continue;
+
+			if (rtk_gpio_mode_get(pins[i], &md) != RT_ERR_OK)
+				md = 0xff;
+			if (rtk_gpio_databit_get(pins[i], &dat) != RT_ERR_OK)
+				dat = 0xff;
+
+			printk("gpiostate:   pin %-2d mode=%u data=%u %s\n",
+			       pins[i], (unsigned)md, (unsigned)dat,
+			       (md == 0xff) ? "" :
+			       (dat == 1 ? "(driving/see high -- likely an enable)" :
+			                   "(low -- may be holding a reset)"));
+		}
+		return count;
+	}
+
+	if (!strncmp(tmp, "sweep", 5)) {
+		static const int pins[] = {
+			0,1,2,3,4,5,6,7,8,9,10, 12,13,14,15,16,17,18,19,20,21,22,23,24,
+			25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,
+			44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,
+			65,66,67,68,69
+		};
+		const int npins = sizeof(pins) / sizeof(pins[0]);
+		int first = -1, last = -1, a, b, tried = 0, hits = 0;
+		int force = (strstr(tmp, "force") != NULL);
+		uint16 id1, id2;
+		uint32 addr;
+
+		sscanf(tmp + 5, "%d %d", &first, &last);
+
+		printk("extmdio-sweep: start (%d pins, mdc range %d..%d, force=%d, 39/40 excluded)\n",
+		       npins, first, last, force);
+
+		for (a = 0; a < npins; a++) {
+			if (first >= 0 && pins[a] < first) continue;
+			if (last  >= 0 && pins[a] > last)  continue;
+
+			/* Never free the PCIe reset lines.
+			 *
+			 * The boot log says "Port0 Device gpio reset pin (40)" and
+			 * "Port1 Device gpio reset pin (39)" -- these hold the two WiFi
+			 * cards out of reset. The first sweep ranged mdc over 0..20 but
+			 * mdio over every pin, so it freed 39 and 40 and dropped both
+			 * radios' reset lines mid-transaction, which is what reset the
+			 * board. They are GPIO outputs by definition and can never be
+			 * MDC/MDIO, so excluding them costs nothing. */
+			if (pins[a] == 39 || pins[a] == 40)
+				continue;
+
+			/* Only touch pins already released to their alternate function.
+			 *
+			 * Asking to disable GPIO on a pin that is already disabled is a
+			 * no-op, so this whole sweep becomes non-destructive. Freeing a
+			 * pin that IS under GPIO is what reset the board: pins 0,1,4,12,
+			 * 15,16,25,34,37,39,40,60 are still GPIO-controlled here and are
+			 * evidently driving something. Note pin 12 is among them, so the
+			 * reference design's "set1 = pins 12/10" was never safe to probe
+			 * on this board, while "set0 = 6/7" was, since both are free. */
+			{
+				rtk_enable_t st = ENABLED;
+				/* continue, not break: skip THIS mdc pin, not the whole sweep.
+				 * pins[0] is 0, which is GPIO-held, so a break here ended the
+				 * run at "0 pairs tried".
+				 * With "force", GPIO-held pins are included too -- 39/40 stay
+				 * excluded unconditionally above. */
+				if (!force && (rtk_gpio_state_get(pins[a], &st) != RT_ERR_OK
+				               || st != DISABLED))
+					continue;
+			}
+
+			for (b = 0; b < npins; b++) {
+				rtk_enable_t stb = ENABLED;
+
+				if (a == b)
+					continue;
+				if (pins[b] == 39 || pins[b] == 40)
+					continue;                       /* PCIe resets, see above */
+				if (!force && (rtk_gpio_state_get(pins[b], &stb) != RT_ERR_OK
+				               || stb != DISABLED))
+					continue;
+
+				if ((tried % 50) == 0)
+					printk("extmdio-sweep: at mdc=%d mdio=%d (%d tried, %d hits)\n",
+					       pins[a], pins[b], tried, hits);
+				tried++;
+
+				rtk_gpio_state_set(pins[a], DISABLED);
+				rtk_gpio_state_set(pins[b], DISABLED);
+				if (rtk_mdio_init() != RT_ERR_OK)
+					continue;
+
+				for (addr = 0; addr < 32; addr++) {
+					if (rtk_mdio_cfg_set(0, 0, addr, MDIO_FMT_C22) != RT_ERR_OK)
+						continue;
+					id1 = id2 = 0xffff;
+					if (rtk_mdio_c22_read(2, &id1) != RT_ERR_OK)
+						continue;
+					if (rtk_mdio_c22_read(3, &id2) != RT_ERR_OK)
+						continue;
+					if (id1 == 0xffff || (id1 == 0 && id2 == 0))
+						continue;
+
+					printk("extmdio-sweep: HIT mdc=%d mdio=%d addr=%u id=%04x:%04x\n",
+					       pins[a], pins[b], addr, id1, id2);
+					hits++;
+					extmdio_last_set = 0;
+					extmdio_last_mdc = pins[a];
+					extmdio_last_mdio = pins[b];
+					extmdio_last_found = addr;
+					extmdio_last_port = 0;
+					extmdio_last_id1 = id1;
+					extmdio_last_id2 = id2;
+				}
+				cond_resched();
+			}
+		}
+		printk("extmdio-sweep: done, %d pairs tried, %d hits\n", tried, hits);
+		return count;
+	}
+
 	if (!strncmp(tmp, "miim", 4)) {
 		uint32 p;
 		uint32 bmcr, id1, id2;
@@ -5028,8 +5930,11 @@ static ssize_t phoebus_extmdio_write(struct file *file, const char __user *buffe
 
 static int phoebus_extmdio_read(struct seq_file *seq, void *v)
 {
-	seq_printf(seq, "usage: echo \"<set> <mdc_pin> <mdio_pin>\" > this file\n");
-	seq_printf(seq, "  stock reference design: set 0 -> pins 6/7, set 1 -> pins 12/10\n");
+	seq_printf(seq, "usage:\n");
+	seq_printf(seq, "  echo \"<set> <mdc> <mdio>\"     probe one pin pair, all mdio ports/addrs\n");
+	seq_printf(seq, "  echo miim                    scan switch ports 0-10 via port-indexed MIIM\n");
+	seq_printf(seq, "  echo \"sweep [first] [last]\"   brute-force MDC/MDIO pins (optional mdc range)\n");
+	seq_printf(seq, "  reference design: set 0 -> pins 6/7, set 1 -> pins 12/10\n");
 	if (extmdio_last_set < 0) {
 		seq_printf(seq, "no probe run yet\n");
 		return 0;
@@ -5191,6 +6096,73 @@ int32 _dal_phy_recovery_init(void)
 		    	 * created unconditionally at switch init, which is exactly the
 		    	 * lifetime the ext-MDIO prober needs. */
 		    	proc_create("extmdio", 0, phy_recovery_proc_dir, &phoebus_extmdio_fop);
+	        }
+
+	        /* Bring up the WAN SerDes.
+	         *
+	         * Nothing in this build ever configured it. rtk_port_serdesMode_set
+	         * is wired in the 9607c mapper but its only caller is an ioctl in
+	         * rtdrv_netfilter.c, so on a plain boot SDS1 is left at whatever
+	         * reset gave it -- and SDS1 is port 7, per the vendor's own
+	         * _rtl9607c_lan_sds1_modeV3_set, which force-link-downs port 7 by
+	         * literal number before touching it.
+	         *
+	         * That is the missing piece behind the symptom this port has shown
+	         * from the start: copper link up and negotiated, MAC speed matched
+	         * to it, and in_octets stuck at exactly 0 -- because the SerDes
+	         * carrying frames between the PHY and the switch was never started.
+	         * The PHY has said so at every single reading, page 0xdc0 reg 0x11
+	         * = 0x6189: 100BASE-X capable, autoneg never completing, link down.
+	         *
+	         * Called here rather than in the early switch path because
+	         * serdesMode_set does RT_INIT_CHK(port_init) and the port module is
+	         * not up yet at that point.
+	         */
+	        {
+	            uint8 m = 0xff, nw = 0xff;
+	            int32 r, rn;
+
+	            r = rtk_port_serdesMode_set(1, LAN_SDS_MODE_SGMII_MAC);
+	            rtk_port_serdesMode_get(1, &m);
+	            printk("PHOEBUS-SDS: sds1 -> SGMII_MAC (set=%d, reads back %u)\n",
+	                   r, m);
+
+	            /* And enable in-band autoneg on the SerDes.
+	             *
+	             * Separate call, separate API, also called by nothing in this
+	             * tree: rtk_port_serdesNWay_set writes SP_SDS_FRC_AN on
+	             * HSG1_SDS_REG2, and AUTO means clear the force bit so in-band
+	             * negotiation actually runs. Setting the mode alone brings the
+	             * lane up but leaves AN forced off, and "autoneg not complete"
+	             * is precisely what the PHY reports on its SerDes side
+	             * (0xdc0 reg 0x11 = 0x6189, bit5 clear). Doing both here rather
+	             * than finding out serially -- each guess is a TFTP cycle.
+	             */
+	            rn = rtk_port_serdesNWay_set(1, LAN_SDS_NWAY_AUTO);
+	            rtk_port_serdesNWay_get(1, &nw);
+	            printk("PHOEBUS-SDS: sds1 nway -> AUTO (set=%d, reads back %u)\n",
+	                   rn, nw);
+	        }
+
+	        /* Keep the WAN MAC in step with whatever the external PHY
+	         * negotiates. Started here because this runs once at switch init
+	         * and the ext-MDIO bus is already up by this point. */
+	        if (NULL == phoebus_wan_poll_task)
+	        {
+	            struct task_struct *t;
+
+	            t = kthread_create(phoebus_wan_poll_thread, NULL, "phoebus_wan");
+	            if (IS_ERR(t))
+	            {
+	                printk("PHOEBUS-WAN: poller failed to start (%ld)\n", PTR_ERR(t));
+	            }
+	            else
+	            {
+	                phoebus_wan_poll_task = t;
+	                wake_up_process(phoebus_wan_poll_task);
+	                printk("PHOEBUS-WAN: link poller started for port %d\n",
+	                       PHOEBUS_WAN_PORT);
+	            }
 	        }
         }
     }

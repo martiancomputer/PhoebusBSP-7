@@ -12284,7 +12284,23 @@ static int rtk_gmac_multi_lan_device_init(void)
 	change_dev_port_mapping(LAN_PORT4,"eth0.5");
 	change_dev_port_mapping(LAN_PORT5,"eth0.6");
 	change_dev_port_mapping(LAN_PORT6,"eth0.7");
-	change_dev_port_mapping(WAN_PORT,"nas0");	
+	change_dev_port_mapping(WAN_PORT,"nas0");
+	/* SGMII1 (port 7) is this board's Ethernet WAN, and it is measured, not
+	 * inferred: with a device in the WAN jack, port 7 was the only one of
+	 * ports 6/7/8 with any traffic at all (out_octets 4470, the DHCP discovers
+	 * from eth0.9), while 6 and 8 sat at zero in and zero out.
+	 *
+	 * eth0.9 already existed with a txPortMask for port 7, so transmit worked
+	 * -- but ingress had no mapping and fell through to the CPU root device
+	 * eth0. The symptom is deceptive: carrier up, tx_packets counting,
+	 * rx_packets stuck at exactly 0, because udhcpc binds eth0.9 while the
+	 * replies arrive labelled eth0.
+	 *
+	 * The same mapping was previously added for SGMII0/eth0.8 on the strength
+	 * of TP-Link's WAN_PHY_PORT_SET="1:6". That 6 is a PHY address on the
+	 * ext-MDIO bus, not a switch port, and port 6 turned out to be wired to
+	 * nothing. */
+	change_dev_port_mapping(APOLLOPRO_SGMII1_PORT,"eth0.9");
 	#if defined(CONFIG_RTL_MULTI_PHY_ETH_WAN)
 	change_dev_port_mapping(LAN_PORT6,"ifprobe");
 	#endif
