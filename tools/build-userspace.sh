@@ -1,6 +1,6 @@
 #!/bin/bash
 # Cross-build the userspace the s6 boot bundle needs but the SDK's
-# rootfs/build-rootfs.sh does not install: hostapd (+libnl), iptables, dropbear,
+# rootfs/build-rootfs.sh does not install: hostapd (+libnl), iptables, dropbear, dnsmasq,
 # wireless_tools. Also copies the SDK's rootfs/usr/ tree, which build-rootfs.sh
 # never copies.
 #
@@ -9,8 +9,10 @@
 #   ./run: line 21: dropbearkey: not found      -> dropbear: ECDSA keygen FAILED
 #   /etc/s6/scripts/nat-up: line 21: iptables: not found   (x12, NAT dead)
 #
-# All sources ship in the vendor GPL drop (rtl8198d-sdk-main); nothing is
-# downloaded. Point VENDOR_SDK at it.
+# Sources come from the vendor GPL drop (rtl8198d-sdk-main) -- point VENDOR_SDK
+# at it. The one exception is dnsmasq: the drop's copy is Realtek-patched and
+# unbuildable outside their tree, so upstream 2.90 is fetched and pinned by
+# sha256 (see the DNSMASQ_ block below).
 #
 # Usage: tools/build-userspace.sh <rootfs-tree> [vendor-sdk-root]
 set -e
@@ -44,6 +46,16 @@ IPTABLES_SRC="$VENDOR_SDK/user/iptables-1.4.21"
 DROPBEAR_SRC="$VENDOR_SDK/user/dropbear/dropbear-2019.78"
 WT_SRC="$VENDOR_SDK/user/wireless_tools"
 OPENSSL_SRC="$VENDOR_SDK/lib/libssl/openssl-1.1.1t"
+# dnsmasq is the one source NOT taken from the vendor drop. The drop's
+# dnsmasq-2.85 is Realtek-patched -- src/dnsmasq.h unconditionally does
+#     #include <rtk/options.h>
+# and no rtk/ headers ship anywhere in the drop, so it cannot build from it:
+#     dnsmasq.h:67:10: fatal error: rtk/options.h: No such file or directory
+# Upstream 2.90 is fetched and pinned by hash instead. That also matches the
+# version the SDK's dnsmasq.conf was written against.
+DNSMASQ_VER=2.90
+DNSMASQ_SHA256=8e50309bd837bfec9649a812e066c09b6988b73d749b7d293c06c57d46a109e4
+DNSMASQ_URL="https://thekelleys.org.uk/dnsmasq/dnsmasq-$DNSMASQ_VER.tar.xz"
 
 missing=""
 for d in "$LIBNL_SRC" "$HOSTAPD_SRC" "$IPTABLES_SRC" "$DROPBEAR_SRC" "$WT_SRC" "$OPENSSL_SRC"; do
@@ -273,7 +285,48 @@ for b in iwconfig iwlist iwpriv iwgetid; do
 done
 cp -a "$SYSROOT/lib/libm.so.6" "$OUT/lib/" 2>/dev/null || true
 
-# --- 8. the SDK's rootfs/usr, which build-rootfs.sh never copies -----------
+# --- 8. dnsmasq (DNS forwarder for LAN/WiFi clients) -----------------------
+# udhcpd hands clients "option dns 192.168.1.1" -- this router -- so without a
+# resolver listening on 53 every client gets an address that answers nothing.
+# SDK 88dce28 added the service and the config but nothing built the binary,
+# so the s6 longrun would exec a missing file and crash-loop forever.
+#
+# Forwarder only. DHCP is udhcpd's job here and DNSSEC/TFTP/auth/scripts are
+# not wanted: each one compiled out is attack surface not shipped. That also
+# keeps the dependency set at libc alone -- no nettle/gmp for DNSSEC.
+say "dnsmasq-$DNSMASQ_VER (forwarder only)"
+mkdir -p "$WORK/dl"
+TAR="$WORK/dl/dnsmasq-$DNSMASQ_VER.tar.xz"
+# Verify on every run, not just after downloading: a truncated or tampered
+# cache file must not be trusted just because it is already on disk.
+if [ ! -f "$TAR" ] || ! echo "$DNSMASQ_SHA256  $TAR" | sha256sum -c - >/dev/null 2>&1; then
+	rm -f "$TAR"
+	curl -fL --retry 3 -o "$TAR" "$DNSMASQ_URL"
+	echo "$DNSMASQ_SHA256  $TAR" | sha256sum -c - >/dev/null \
+		|| { echo "ERROR: dnsmasq-$DNSMASQ_VER.tar.xz failed its sha256 check" >&2; exit 1; }
+fi
+rm -rf "$WORK/dnsmasq"; mkdir -p "$WORK/dnsmasq"
+tar xf "$TAR" -C "$WORK/dnsmasq" --strip-components=1
+( cd "$WORK/dnsmasq"
+  make -j"$(nproc)" \
+       CC="${CROSS_COMPILE}gcc" \
+       COPTS="-DNO_DHCP -DNO_DHCP6 -DNO_TFTP -DNO_DNSSEC -DNO_AUTH -DNO_SCRIPT -DNO_DUMPFILE -DNO_IPSET -DNO_LOOP" \
+       >/dev/null )
+cp "$WORK/dnsmasq/src/dnsmasq" "$OUT/usr/sbin/dnsmasq"
+${CROSS_COMPILE}strip "$OUT/usr/sbin/dnsmasq" 2>/dev/null || true
+
+# dnsmasq drops privileges to user=nobody/group=nogroup per the SDK's config,
+# and refuses to start if it cannot resolve them. The SDK adds both to
+# etc/passwd and etc/group; fail here rather than at boot if that regressed.
+for ent in "nobody:etc/passwd" "nogroup:etc/group"; do
+	name=${ent%%:*}; file=${ent#*:}
+	grep -q "^$name:" "$OUT/$file" 2>/dev/null || {
+		echo "ERROR: dnsmasq needs '$name' in $file (user=/group= in dnsmasq.conf)" >&2
+		exit 1
+	}
+done
+
+# --- 9. the SDK's rootfs/usr, which build-rootfs.sh never copies -----------
 # usr/share/udhcpc/default.script is what `udhcpc -s` execs; without it the WAN
 # gets a lease and never configures the interface.
 if [ -d "$BSP/sdk/rootfs/usr" ]; then
@@ -283,14 +336,25 @@ if [ -d "$BSP/sdk/rootfs/usr" ]; then
 	[ -f "$OUT/usr/bin/phoebus-check" ] && chmod 0755 "$OUT/usr/bin/phoebus-check"
 fi
 
-# --- 9. guard: every binary the boot bundle execs must now exist -----------
+# --- 10. guard: every binary the boot bundle execs must now exist -----------
 # This is the check whose absence let hostapd/dropbear/iptables ship missing.
+#
+# The service loop below derives the binary from each run script's `exec` line
+# rather than matching a fixed list of names. The list is still used for the
+# other tools a script happens to call, but it must not be the only source:
+# when SDK 88dce28 added the dnsmasq service, "dnsmasq" was not in the list, so
+# this guard passed a bundle whose new longrun could only crash-loop. An
+# allowlist can only catch what someone already thought of, which is the wrong
+# shape for a check meant to catch the thing nobody thought of.
 say "verifying the boot bundle's binaries resolve"
 fail=0
 for svc in $(cat "$OUT/etc/s6/source/ok-all/contents" 2>/dev/null); do
 	run="$OUT/etc/s6/source/$svc/run"
 	[ -f "$run" ] || continue
-	for w in $(grep -oE '\b(hostapd|hostapd_cli|dropbear|dropbearkey|iptables|udhcpd|udhcpc|syslogd|klogd|brctl|ip)\b' "$run" | sort -u); do
+	execd=$(sed -n 's|^[[:space:]]*exec[[:space:]]\{1,\}\(/[^[:space:]]*/\)\{0,1\}\([A-Za-z0-9_.-]\{1,\}\).*|\2|p' "$run")
+	for w in $(printf '%s\n%s\n' "$execd" \
+	           "$(grep -oE '\b(hostapd|hostapd_cli|dropbear|dropbearkey|iptables|udhcpd|udhcpc|syslogd|klogd|brctl|ip)\b' "$run")" \
+	           | grep -v '^$' | sort -u); do
 		found=0
 		for d in bin sbin usr/bin usr/sbin; do
 			[ -e "$OUT/$d/$w" ] && { found=1; break; }
@@ -310,7 +374,7 @@ for s in etc/s6/scripts/nat-up etc/s6/scripts/network-up; do
 done
 [ "$fail" = 0 ] || { echo "ERROR: the image would boot with unusable services" >&2; exit 1; }
 
-# --- 10. guard: every DT_NEEDED library must RESOLVE inside the image ------
+# --- 11. guard: every DT_NEEDED library must RESOLVE inside the image ------
 # Checking only that a file of the right NAME exists is not enough: a dangling
 # symlink passes that and then fails at exec time. Resolve each one for real.
 say "verifying shared libraries resolve"
@@ -331,7 +395,7 @@ if [ -n "$unresolved" ]; then
 	exit 1
 fi
 
-# --- 11. runtime dirs the services expect ---------------------------------
+# --- 12. runtime dirs the services expect ---------------------------------
 # udhcpd: can't open '/var/lib/misc/udhcpd.leases': No such file or directory
 mkdir -p "$OUT/var/lib/misc" "$OUT/etc/dropbear"
 : > "$OUT/var/lib/misc/udhcpd.leases"
