@@ -8368,7 +8368,7 @@ int rtk_fc_proc_devGwMac_set(struct file *filp, const char *buff,unsigned long l
 	if (buff)
 	{
 		/* copy data to the buffer */
-		strncpy(tmpBuf+1, buff, strlen);
+		memcpy(tmpBuf + 1, buff, strlen);
 		tmpBuf[strlen] = '\0';
 		tmpBuf[0] = ' ';
 
@@ -20653,4 +20653,3 @@ void rtk_fc_proc_exit(void)
 	proc_remove(rtk_rg_ctrl_proc_dir);
 	proc_remove(rtk_fc_proc_dir);
 }
-

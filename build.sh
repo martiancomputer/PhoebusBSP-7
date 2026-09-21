@@ -1,5 +1,5 @@
 #!/bin/sh
-# PhoebusBSP-7 — build a bootable mainline Linux 7.1.y for RTL9607C/Cv2.
+# PhoebusBSP-7 — build a bootable mainline Linux 7.3-rc for RTL9607C/Cv2.
 #
 # Reconstructs the ported kernel tree from three ingredients:
 #   1. pristine upstream linux-${KVER} (downloaded)
@@ -8,15 +8,16 @@
 # then configures, builds, and packages a U-Boot image.
 #
 # Usage: ./build.sh              # full build -> images/
-#        KVER=7.1.6 ./build.sh   # rebase onto another 7.1 point release
+#        KVER=7.3-rc4 ./build.sh # rebase onto another mainline release
 set -e
 
 BSP=$(cd "$(dirname "$0")" && pwd)
-KVER="${KVER:-7.1.5}"
+KVER="${KVER:-7.3-rc3}"
 KMAJ="${KVER%%.*}"                   # 7 -> cdn.kernel.org/pub/linux/kernel/v7.x
 SDK="$BSP/sdk"                       # Phoebus-SDK submodule
 WORK="$BSP/build"
 K="$WORK/linux-$KVER"
+PRISTINE="$WORK/pristine/linux-$KVER"
 CROSS_COMPILE="${CROSS_COMPILE:-mips-buildroot-linux-gnu-}"
 JOBS="${JOBS:-$(nproc)}"
 
@@ -24,7 +25,7 @@ JOBS="${JOBS:-$(nproc)}"
 
 # --- 0. host tool preflight (fail fast, not 10 minutes into the build) ---
 missing=""
-for t in make gcc bison flex bc mkimage lzma; do
+for t in make gcc git bison flex bc mkimage lzma; do
 	command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
 done
 if [ -n "$missing" ]; then
@@ -41,9 +42,31 @@ export PATH="$BSP/toolchain/mips32--glibc--stable-2025.08-1/bin:$PATH"
 export ARCH=mips CROSS_COMPILE
 
 # --- 2. pristine kernel ---
-mkdir -p "$WORK"; cd "$WORK"
-[ -f "linux-$KVER.tar.xz" ] || curl -fL --retry 3 -O "https://cdn.kernel.org/pub/linux/kernel/v$KMAJ.x/linux-$KVER.tar.xz"
-rm -rf "$K"; tar xf "linux-$KVER.tar.xz"
+# Mainline release candidates are taken from Linus's official kernel.org Git
+# tree. Stable releases retain the faster CDN tarball path. Keep an immutable
+# pristine cache and reconstruct the disposable build tree for every run.
+mkdir -p "$WORK/pristine"; cd "$WORK"
+if [ ! -d "$PRISTINE" ]; then
+	case "$KVER" in
+	*-rc*) git clone --depth 1 --branch "v$KVER" --single-branch \
+		       https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git \
+		       "$PRISTINE" ;;
+	*) [ -f "linux-$KVER.tar.xz" ] || curl -fL --retry 3 -O \
+		"https://cdn.kernel.org/pub/linux/kernel/v$KMAJ.x/linux-$KVER.tar.xz"
+		mkdir -p "$PRISTINE"
+		tar xf "linux-$KVER.tar.xz" -C "$PRISTINE" --strip-components=1 ;;
+	esac
+fi
+EXPECTED_KVER="$KVER"
+case "$KVER" in
+*-rc*) EXPECTED_KVER="${KVER%%-rc*}.0-rc${KVER##*-rc}" ;;
+esac
+test "$(make -s -C "$PRISTINE" kernelversion)" = "$EXPECTED_KVER" || {
+	echo "ERROR: pristine cache is not Linux $KVER: $PRISTINE" >&2
+	exit 1
+}
+rm -rf "$K"
+cp -a --reflink=auto "$PRISTINE" "$K"
 
 # --- 3. graft pristine vendor SoC code (must match the baseline the overlay was cut against) ---
 cp -a "$SDK/vendor/realtek-net/."                                "$K/drivers/net/ethernet/realtek/"

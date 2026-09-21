@@ -21,6 +21,24 @@
 	#include <linux/atalk.h>
 	#include <linux/udp.h>
 	#include <linux/if_pppox.h>
+
+	/* Linux 7.3 removed AppleTalk, while NAT25 still parses its wire format. */
+	struct ddpehdr {
+		__be16 deh_len_hops, deh_sum, deh_dnet, deh_snet;
+		__u8 deh_dnode, deh_snode, deh_dport, deh_sport;
+	};
+
+	#define AARP_PA_ALEN 4
+	struct elapaarp {
+		__be16 hw_type, pa_type;
+		__u8 hw_len, pa_len;
+		__be16 function;
+		__u8 hw_src[ETH_ALEN], pa_src_zero;
+		__be16 pa_src_net;
+		__u8 pa_src_node, hw_dst[ETH_ALEN], pa_dst_zero;
+		__be16 pa_dst_net;
+		__u8 pa_dst_node;
+	} __packed;
 #endif
 
 	#include <drv_types.h>

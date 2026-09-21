@@ -535,7 +535,9 @@ static int __setup_bank_irq(struct rtk_gpio_bank_info *info, struct rtk_gpio_ban
 	if (ret != 0)
 		return ret;
 
-	bank->domain = irq_domain_add_linear(info->node, bank->chip.ngpio, &irq_generic_chip_ops, bank);
+	bank->domain = irq_domain_create_linear(of_fwnode_handle(info->node),
+					bank->chip.ngpio,
+					&irq_generic_chip_ops, bank);
 	if (!bank->domain) {
 		dev_err(dev, "%s, Unable to allocate domain\n", bank->label);
 		ret = -ENOMEM;

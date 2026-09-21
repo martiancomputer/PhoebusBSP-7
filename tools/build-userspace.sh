@@ -9,10 +9,9 @@
 #   ./run: line 21: dropbearkey: not found      -> dropbear: ECDSA keygen FAILED
 #   /etc/s6/scripts/nat-up: line 21: iptables: not found   (x12, NAT dead)
 #
-# Sources come from the vendor GPL drop (rtl8198d-sdk-main) -- point VENDOR_SDK
-# at it. The one exception is dnsmasq: the drop's copy is Realtek-patched and
-# unbuildable outside their tree, so upstream 2.90 is fetched and pinned by
-# sha256 (see the DNSMASQ_ block below).
+# Hardware-specific sources come from the vendor GPL drop
+# (rtl8198d-sdk-main). Security-facing daemons come from current upstream
+# release archives and are pinned by sha256 below.
 #
 # Usage: tools/build-userspace.sh <rootfs-tree> [vendor-sdk-root]
 set -e
@@ -31,6 +30,8 @@ STAGING="$WORK/staging"
 # --- locate the vendor GPL drop -------------------------------------------
 if [ -z "$VENDOR_SDK" ]; then
 	for c in "$BSP/../OpenWRT1500/rtl8198d-sdk-main" \
+	         "$BSP/../Luna_Project/GPL-Sources/rtl8198d-sdk-main" \
+	         "$HOME/Luna_Project/GPL-Sources/rtl8198d-sdk-main" \
 	         "$HOME/OpenWRT1500/rtl8198d-sdk-main" \
 	         "$BSP/../rtl8198d-sdk-main"; do
 		[ -d "$c/user" ] && { VENDOR_SDK=$(cd "$c" && pwd); break; }
@@ -40,12 +41,7 @@ fi
 # Fail loudly rather than skipping. The SDK's wireless_tools block guards on an
 # unset $WT_SRC, so `[ -d "" ]` is always false and it has silently never run --
 # do not repeat that.
-LIBNL_SRC="$VENDOR_SDK/lib/libnl/libnl-3.2.25"
-HOSTAPD_SRC="$VENDOR_SDK/user/hostapd/hostapd-2.11"
-IPTABLES_SRC="$VENDOR_SDK/user/iptables-1.4.21"
-DROPBEAR_SRC="$VENDOR_SDK/user/dropbear/dropbear-2019.78"
 WT_SRC="$VENDOR_SDK/user/wireless_tools"
-OPENSSL_SRC="$VENDOR_SDK/lib/libssl/openssl-1.1.1t"
 # dnsmasq is the one source NOT taken from the vendor drop. The drop's
 # dnsmasq-2.85 is Realtek-patched -- src/dnsmasq.h unconditionally does
 #     #include <rtk/options.h>
@@ -53,12 +49,27 @@ OPENSSL_SRC="$VENDOR_SDK/lib/libssl/openssl-1.1.1t"
 #     dnsmasq.h:67:10: fatal error: rtk/options.h: No such file or directory
 # Upstream 2.90 is fetched and pinned by hash instead. That also matches the
 # version the SDK's dnsmasq.conf was written against.
-DNSMASQ_VER=2.90
-DNSMASQ_SHA256=8e50309bd837bfec9649a812e066c09b6988b73d749b7d293c06c57d46a109e4
+DROPBEAR_VER=2026.94
+DROPBEAR_SHA256=e098034a843699200c8c977a991fff73159735bf795d5f72ef672c41a6b1ae81
+DROPBEAR_URL="https://matt.ucc.asn.au/dropbear/releases/dropbear-$DROPBEAR_VER.tar.bz2"
+DNSMASQ_VER=2.93
+DNSMASQ_SHA256=0c00d4e5c97c8306e5fb932b348b34269c9c29a0e7df0e8e82958b407092bc19
 DNSMASQ_URL="https://thekelleys.org.uk/dnsmasq/dnsmasq-$DNSMASQ_VER.tar.xz"
+LIBNL_VER=3.12.0
+LIBNL_SHA256=fc51ca7196f1a3f5fdf6ffd3864b50f4f9c02333be28be4eeca057e103c0dd18
+LIBNL_URL="https://github.com/thom311/libnl/releases/download/libnl3_12_0/libnl-$LIBNL_VER.tar.gz"
+HOSTAPD_VER=2.12
+HOSTAPD_SHA256=f43502561c28ba47ab77e18e1a973d07361c68cc8b14178e619bd5796b70eabd
+HOSTAPD_URL="https://w1.fi/releases/hostapd-$HOSTAPD_VER.tar.gz"
+IPTABLES_VER=1.8.13
+IPTABLES_SHA256=1afcd33da9e8f913ace6a2126788162e207e26f5d5e29c6573c0e581ffc58b99
+IPTABLES_URL="https://www.netfilter.org/projects/iptables/files/iptables-$IPTABLES_VER.tar.xz"
+OPENSSL_VER=3.5.8
+OPENSSL_SHA256=a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
+OPENSSL_URL="https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VER/openssl-$OPENSSL_VER.tar.gz"
 
 missing=""
-for d in "$LIBNL_SRC" "$HOSTAPD_SRC" "$IPTABLES_SRC" "$DROPBEAR_SRC" "$WT_SRC" "$OPENSSL_SRC"; do
+for d in "$WT_SRC"; do
 	[ -d "$d" ] || missing="$missing\n    $d"
 done
 if [ -n "$VENDOR_SDK" ] && [ -n "$missing" ] || [ -z "$VENDOR_SDK" ]; then
@@ -79,14 +90,33 @@ mkdir -p "$WORK" "$STAGING" "$OUT/sbin" "$OUT/lib" "$OUT/usr/sbin"
 
 say() { echo "userspace: $*"; }
 
+fetch_source() {
+	name=$1 url=$2 sha=$3 archive=$4 dest=$5
+	mkdir -p "$WORK/dl"
+	tarball="$WORK/dl/$archive"
+	if [ ! -f "$tarball" ] ||
+	   ! echo "$sha  $tarball" | sha256sum -c - >/dev/null 2>&1; then
+		rm -f "$tarball"
+		curl -fL --retry 3 -o "$tarball" "$url"
+		echo "$sha  $tarball" | sha256sum -c - >/dev/null || {
+			echo "ERROR: $name archive failed its sha256 check" >&2
+			exit 1
+		}
+	fi
+	rm -rf "$dest"; mkdir -p "$dest"
+	tar xf "$tarball" -C "$dest" --strip-components=1
+}
+
 # --- 1. libnl (hostapd's nl80211 transport) --------------------------------
-if [ ! -f "$STAGING/lib/libnl-3.so" ]; then
-	say "libnl-3.2.25"
-	rm -rf "$WORK/libnl"; cp -a "$LIBNL_SRC" "$WORK/libnl"
+if [ ! -f "$STAGING/.libnl-$LIBNL_VER" ]; then
+	say "libnl-$LIBNL_VER"
+	fetch_source "libnl-$LIBNL_VER" "$LIBNL_URL" "$LIBNL_SHA256" \
+		"libnl-$LIBNL_VER.tar.gz" "$WORK/libnl"
 	( cd "$WORK/libnl"
 	  ./configure --host="$HOST" --prefix="$STAGING" \
 	              --disable-cli --disable-static --enable-shared >/dev/null
 	  make -j"$(nproc)" >/dev/null && make install >/dev/null )
+	touch "$STAGING/.libnl-$LIBNL_VER"
 fi
 # -L (dereference), NOT -a alone. libtool installs libnl-3.so.200 as a symlink to
 # libnl-3.so.200.20.0; `cp -a` copies the *link* and leaves it dangling in the
@@ -106,20 +136,23 @@ done
 #     undefined reference to `crypto_bignum_deinit'
 # The shipped hostapd.conf uses `wpa_key_mgmt=WPA-PSK SAE` and `sae_pwe=2`, so
 # SAE is not optional here -- build openssl and use CONFIG_TLS=openssl.
-if [ ! -f "$STAGING/lib/libcrypto.a" ]; then
-	say "openssl-1.1.1t (static libcrypto/libssl for SAE)"
-	rm -rf "$WORK/openssl"; cp -a "$OPENSSL_SRC" "$WORK/openssl"
+if [ ! -f "$STAGING/.openssl-$OPENSSL_VER" ]; then
+	say "openssl-$OPENSSL_VER LTS (static libcrypto/libssl for SAE)"
+	fetch_source "openssl-$OPENSSL_VER" "$OPENSSL_URL" "$OPENSSL_SHA256" \
+		"openssl-$OPENSSL_VER.tar.gz" "$WORK/openssl"
 	( cd "$WORK/openssl"
 	  ./Configure linux-mips32 --prefix="$STAGING" \
 	      --cross-compile-prefix="$CROSS_COMPILE" \
 	      no-shared no-async no-dso no-engine no-tests no-ssl3 no-comp >/dev/null
 	  make -j"$(nproc)" build_libs >/dev/null
 	  make install_dev >/dev/null )
+	touch "$STAGING/.openssl-$OPENSSL_VER"
 fi
 
 # --- 3. hostapd ------------------------------------------------------------
-say "hostapd-2.11 (nl80211, openssl crypto, WPA2 + WPA3/SAE)"
-rm -rf "$WORK/hostapd"; cp -a "$HOSTAPD_SRC" "$WORK/hostapd"
+say "hostapd-$HOSTAPD_VER (nl80211, openssl crypto, WPA2 + WPA3/SAE)"
+fetch_source "hostapd-$HOSTAPD_VER" "$HOSTAPD_URL" "$HOSTAPD_SHA256" \
+	"hostapd-$HOSTAPD_VER.tar.gz" "$WORK/hostapd"
 # This option set is the one that produced a working SAE hostapd for the 6.18
 # image; do not swap TLS=openssl for internal without re-checking SAE links.
 cat > "$WORK/hostapd/hostapd/.config" <<'CFG'
@@ -169,7 +202,11 @@ if any(l.strip() == 'NEED_SHA384=y' for l in block):
     sys.exit(0)                                  # already correct
 tgt = next((i for i, l in enumerate(block) if l.strip() == 'NEED_HMAC_SHA384_KDF=y'), None)
 if tgt is None:
-    sys.exit("ERROR: CONFIG_SAE block has no NEED_HMAC_SHA384_KDF to anchor on")
+    # hostapd 2.12 no longer unconditionally requests SHA-384 for SAE. Its
+    # later dependency block enables SHA-384 and the KDF together only when a
+    # selected feature (for example 802.11be) actually needs them.
+    print("userspace: hostapd SAE SHA-384 dependency logic is already current")
+    sys.exit(0)
 block.insert(tgt + 1, 'NEED_SHA384=y')
 lines[start:end] = block
 open(p, 'w').write('\n'.join(lines))
@@ -196,20 +233,25 @@ PY
   PKG_CONFIG_LIBDIR="$STAGING/lib/pkgconfig" \
   CC="${CROSS_COMPILE}gcc" LD="${CROSS_COMPILE}ld" \
   CFLAGS="-I$STAGING/include -I$STAGING/include/libnl3 -O2" \
-  LDFLAGS="-L$STAGING/lib" \
+  LDFLAGS="-L$STAGING/lib" LIBS="-latomic" \
   make -j"$(nproc)" hostapd hostapd_cli >/dev/null )
 cp "$WORK/hostapd/hostapd/hostapd"     "$OUT/sbin/hostapd"
 cp "$WORK/hostapd/hostapd/hostapd_cli" "$OUT/sbin/hostapd_cli"
 ${CROSS_COMPILE}strip "$OUT/sbin/hostapd" "$OUT/sbin/hostapd_cli" 2>/dev/null || true
+# OpenSSL 3.5 uses 64-bit atomics that MIPS32 supplies through libatomic.
+cp -aL "$SYSROOT/lib/libatomic.so.1" "$OUT/lib/libatomic.so.1"
+${CROSS_COMPILE}strip "$OUT/lib/libatomic.so.1" 2>/dev/null || true
 
 # --- 4. iptables (legacy setsockopt backend) -------------------------------
-say "iptables-1.4.21 (legacy backend)"
-rm -rf "$WORK/iptables"; cp -a "$IPTABLES_SRC" "$WORK/iptables"
+say "iptables-$IPTABLES_VER (legacy backend)"
+fetch_source "iptables-$IPTABLES_VER" "$IPTABLES_URL" "$IPTABLES_SHA256" \
+	"iptables-$IPTABLES_VER.tar.xz" "$WORK/iptables"
 ( cd "$WORK/iptables"
   # These three need libraries we do not ship; none matter for NAT.
   rm -f extensions/libxt_connlabel.c extensions/libxt_macrange.c extensions/libxt_TCPTERMAC.c
   # NB: no --with-kernel. That drags *internal* kernel headers in and dies on
   # asm/rwonce.h; the sysroot's exported headers are the right ones.
+  PKG_CONFIG_LIBDIR="$STAGING/lib/pkgconfig" \
   ./configure --host="$HOST" --prefix="$STAGING" \
               --disable-nftables --disable-shared --enable-static --disable-ipv6 >/dev/null
   # utils/nfnl_osf wants libnfnetlink and aborts the recursive build before it
@@ -220,7 +262,7 @@ rm -rf "$WORK/iptables"; cp -a "$IPTABLES_SRC" "$WORK/iptables"
   make -C libiptc    -j"$(nproc)" >/dev/null
   make -C extensions -j"$(nproc)" >/dev/null
   make -C iptables   -j"$(nproc)" >/dev/null )
-cp "$WORK/iptables/iptables/xtables-multi" "$OUT/sbin/xtables-multi"
+cp "$WORK/iptables/iptables/xtables-legacy-multi" "$OUT/sbin/xtables-multi"
 ${CROSS_COMPILE}strip "$OUT/sbin/xtables-multi" 2>/dev/null || true
 for t in iptables iptables-save iptables-restore; do
 	ln -sf xtables-multi "$OUT/sbin/$t"
@@ -257,14 +299,27 @@ if [ ! -f "$STAGING/lib/libcrypt.a" ]; then
 fi
 
 # --- 6. dropbear -----------------------------------------------------------
-say "dropbear-2019.78"
-rm -rf "$WORK/dropbear"; cp -a "$DROPBEAR_SRC" "$WORK/dropbear"
+say "dropbear-$DROPBEAR_VER"
+mkdir -p "$WORK/dl"
+DROPBEAR_TAR="$WORK/dl/dropbear-$DROPBEAR_VER.tar.bz2"
+if [ ! -f "$DROPBEAR_TAR" ] ||
+   ! echo "$DROPBEAR_SHA256  $DROPBEAR_TAR" | sha256sum -c - >/dev/null 2>&1; then
+	rm -f "$DROPBEAR_TAR"
+	curl -fL --retry 3 -o "$DROPBEAR_TAR" "$DROPBEAR_URL"
+	echo "$DROPBEAR_SHA256  $DROPBEAR_TAR" | sha256sum -c - >/dev/null || {
+		echo "ERROR: dropbear-$DROPBEAR_VER archive failed its sha256 check" >&2
+		exit 1
+	}
+fi
+rm -rf "$WORK/dropbear"; mkdir -p "$WORK/dropbear"
+tar xf "$DROPBEAR_TAR" -C "$WORK/dropbear" --strip-components=1
 ( cd "$WORK/dropbear"
   make clean >/dev/null 2>&1 || true
   ./configure --host="$HOST" --prefix=/usr \
               CPPFLAGS="-I$STAGING/include" LDFLAGS="-L$STAGING/lib" LIBS="-lcrypt" \
-              --disable-zlib --disable-utmp --disable-utmpx --disable-wtmp \
-              --disable-lastlog --disable-pututline --disable-pututxline >/dev/null
+              --disable-zlib --disable-lastlog --disable-utmp --disable-utmpx \
+              --disable-wtmp --disable-wtmpx --disable-pututline \
+              --disable-pututxline --enable-bundled-libtom >/dev/null
   make -j"$(nproc)" PROGRAMS="dropbear dropbearkey dropbearconvert scp" MULTI=1 >/dev/null )
 cp "$WORK/dropbear/dropbearmulti" "$OUT/sbin/dropbearmulti"
 ${CROSS_COMPILE}strip "$OUT/sbin/dropbearmulti" 2>/dev/null || true
@@ -286,7 +341,7 @@ done
 cp -a "$SYSROOT/lib/libm.so.6" "$OUT/lib/" 2>/dev/null || true
 
 # --- 8. dnsmasq (DNS forwarder for LAN/WiFi clients) -----------------------
-# udhcpd hands clients "option dns 192.168.1.1" -- this router -- so without a
+# udhcpd hands clients the router LAN address as DNS, so without a
 # resolver listening on 53 every client gets an address that answers nothing.
 # SDK 88dce28 added the service and the config but nothing built the binary,
 # so the s6 longrun would exec a missing file and crash-loop forever.

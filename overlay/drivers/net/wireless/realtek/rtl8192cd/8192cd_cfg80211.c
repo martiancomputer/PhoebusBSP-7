@@ -279,7 +279,8 @@ int realtek_remain_on_channel(struct wiphy *wiphy,
     struct wireless_dev *wdev,
 	struct ieee80211_channel *channel,
 	unsigned int duration,
-	u64 *cookie);
+	u64 cookie,
+	const u8 *rx_addr);
 
 static int realtek_cancel_remain_on_channel(struct wiphy *wiphy,
 			struct wireless_dev *wdev,	u64 cookie);
@@ -6817,7 +6818,8 @@ int realtek_remain_on_channel(struct wiphy *wiphy,
     struct wireless_dev *wdev,
 	struct ieee80211_channel *channel,
 	unsigned int duration,
-	u64 *cookie)
+	u64 cookie,
+	const u8 *rx_addr)
 
 {
 	struct rtknl *rtk = wiphy_priv(wiphy);
@@ -6832,7 +6834,7 @@ int realtek_remain_on_channel(struct wiphy *wiphy,
 
     //rtk_abort_scan(priv);  // abort on going scan
 	memcpy(&priv->p2pPtr->remain_on_ch_channel, channel, sizeof(struct ieee80211_channel));
-	priv->p2pPtr->remain_on_ch_cookie= *cookie;
+	priv->p2pPtr->remain_on_ch_cookie = cookie;
     priv->p2pPtr->restore_channel=GET_ROOT(priv)->pmib->dot11RFEntry.dot11channel;  /*restore orignal channel*/
 
     priv->pmib->p2p_mib.p2p_listen_channel=remain_ch;   /*set listen channel to remain channel */
@@ -6865,7 +6867,7 @@ int realtek_remain_on_channel(struct wiphy *wiphy,
     NDEBUG3("state[%d]\n",rtk_p2p_get_state(priv));
     priv->pshare->rtk_remain_on_channel=1; // for lock channel switch    and  indicate now under remain channel mode
 
-    cfg80211_ready_on_channel(wdev, *cookie, channel, duration, GFP_KERNEL);
+	    cfg80211_ready_on_channel(wdev, cookie, channel, duration, GFP_KERNEL);
 
 	if(duration < 400)
 		duration = duration*3;//extend from exper. unit ms
@@ -7076,7 +7078,7 @@ fail:
 
 static int realtek_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
            struct cfg80211_mgmt_tx_params *params,
-           u64 *cookie)
+	       u64 cookie)
 {
 	struct rtknl *rtk = wiphy_priv(wiphy);
 	struct rtl8192cd_priv *priv = get_priv_from_wdev(rtk, wdev);
@@ -7087,19 +7089,16 @@ static int realtek_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
     const struct ieee80211_mgmt *mgmt;    
 	NLENTER;    
    
-	*cookie = 0;    
 #ifdef P2P_SUPPORT
     priv->p2pPtr->send_action_id++;    
     if(priv->p2pPtr->send_action_id==0)
         priv->p2pPtr->send_action_id++;            
 
     
-    *cookie = priv->p2pPtr->send_action_id;
 #else
 	priv->mgmt_action_id++;
 	if(!priv->mgmt_action_id)
 		priv->mgmt_action_id++;
-	*cookie = priv->mgmt_action_id;
 #endif
 
 	mgmt = (const struct ieee80211_mgmt *)params->buf;    
@@ -7110,7 +7109,7 @@ static int realtek_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 			s32 ie_len = params->len - ie_offset;
             NDEBUG("!!!set probe rsp from cfg80211\n");
             rtk_cfg80211_set_wps_p2p_ie(priv,params->buf+ie_offset,ie_len,MGMT_PROBERSP);
-            cfg80211_mgmt_tx_status(wdev, *cookie, params->buf, params->len, TRUE, GFP_KERNEL);//GFP_ATOMIC            
+            cfg80211_mgmt_tx_status(wdev, cookie, params->buf, params->len, TRUE, GFP_KERNEL);//GFP_ATOMIC
             return 0;            			
 		} else if (ieee80211_is_disassoc(mgmt->frame_control) ||
 			ieee80211_is_deauth(mgmt->frame_control)) {
@@ -7119,7 +7118,7 @@ static int realtek_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
                 mgmt->da[3],mgmt->da[4],mgmt->da[5],mgmt->u.disassoc.reason_code);
 
             issue_deauth(priv,mgmt->da,mgmt->u.disassoc.reason_code);
-            cfg80211_mgmt_tx_status(wdev, *cookie, params->buf, params->len, TRUE, GFP_KERNEL);//GFP_ATOMIC            
+            cfg80211_mgmt_tx_status(wdev, cookie, params->buf, params->len, TRUE, GFP_KERNEL);//GFP_ATOMIC
             return 0;
 
 		} else if (ieee80211_is_action(mgmt->frame_control)) {
@@ -7130,7 +7129,7 @@ static int realtek_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 #ifdef P2P_SUPPORT
                 rtk_cfg80211_mgmt_tx(priv, tx_ch, params->buf, params->len);
 #endif
-                cfg80211_mgmt_tx_status(wdev, *cookie, params->buf, params->len, TRUE, GFP_KERNEL);//GFP_ATOMIC                            
+                cfg80211_mgmt_tx_status(wdev, cookie, params->buf, params->len, TRUE, GFP_KERNEL);//GFP_ATOMIC
                 //NDEBUG("cookie_id[%02X]\n",priv->p2pPtr->send_action_id);    
 
 		}
@@ -7144,7 +7143,8 @@ int realtek_remain_on_channel(struct wiphy *wiphy,
     struct wireless_dev *wdev,
 	struct ieee80211_channel *channel,
 	unsigned int duration,
-	u64 *cookie)
+	u64 cookie,
+	const u8 *rx_addr)
 
 {
 	struct rtknl *rtk = wiphy_priv(wiphy);
@@ -7551,7 +7551,7 @@ fail:
 
 static int realtek_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
            struct cfg80211_mgmt_tx_params *params,
-           u64 *cookie)
+	       u64 cookie)
 {
 	struct rtknl *rtk = wiphy_priv(wiphy);
 	struct rtl8192cd_priv *priv = get_priv_from_wdev(rtk, wdev);
@@ -7582,8 +7582,6 @@ static int realtek_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 		tx_ch = priv->pmib->dot11RFEntry.dot11channel;
 	}
 	
-	*cookie = priv->mgmt_tx_cookie++;
-
 	mgmt = (struct ieee80211_mgmt *)params->buf;
 
 	//NDEBUG("frame control=0x%x\n", le16_to_cpu(mgmt->frame_control));
@@ -7591,7 +7589,7 @@ static int realtek_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 	frame_styp = le16_to_cpu(mgmt->frame_control) & IEEE80211_FCTL_STYPE;
 	if(frame_styp != IEEE80211_STYPE_ASSOC_RESP && frame_styp != IEEE80211_STYPE_REASSOC_RESP) {
 		/* indicate ack before issue frame to avoid racing with rsp frame */
-		cfg80211_mgmt_tx_status(wdev, *cookie, params->buf, params->len, TRUE, GFP_ATOMIC);//GFP_ATOMIC
+		cfg80211_mgmt_tx_status(wdev, cookie, params->buf, params->len, TRUE, GFP_ATOMIC);//GFP_ATOMIC
 	}
 
 	/*put action type condition at top of mgmt*/
@@ -8716,4 +8714,3 @@ int wpas_issue_sae_auth_commit( struct rtl8192cd_priv *priv)
 #endif
 
 #endif //RTK_NL80211
-

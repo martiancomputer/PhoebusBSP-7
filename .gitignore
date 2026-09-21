@@ -8,6 +8,9 @@
 *.swp
 *~
 .DS_Store
+__pycache__/
+*.pyc
 
 # Internal bring-up notes; do not publish.
 /PORT_NOTES.md
+/tools/tftp.env

@@ -18,6 +18,25 @@
 #include <linux/udp.h>
 #include <linux/if_pppox.h>
 typedef struct udphdr udphdr;
+
+/* AppleTalk was removed from Linux 7.3, but the vendor NAT25 bridge parser
+ * still recognizes its on-wire headers. Keep the private wire definitions. */
+struct ddpehdr {
+	__be16 deh_len_hops, deh_sum, deh_dnet, deh_snet;
+	__u8 deh_dnode, deh_snode, deh_dport, deh_sport;
+};
+
+#define AARP_PA_ALEN 4
+struct elapaarp {
+	__be16 hw_type, pa_type;
+	__u8 hw_len, pa_len;
+	__be16 function;
+	__u8 hw_src[ETH_ALEN], pa_src_zero;
+	__be16 pa_src_net;
+	__u8 pa_src_node, hw_dst[ETH_ALEN], pa_dst_zero;
+	__be16 pa_dst_net;
+	__u8 pa_dst_node;
+} __packed;
 #elif defined(__ECOS)
 //#include <cyg/io/eth/rltk/819x/wrapper/sys_support.h>
 #include <cyg/io/eth/rltk/819x/wrapper/skbuff.h>
@@ -3018,4 +3037,3 @@ unsigned char nat25_filter(struct rtl8192cd_priv *priv, struct sk_buff *skb) {
 }
 
 #endif // RTK_BR_EXT
-

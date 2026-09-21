@@ -101,6 +101,22 @@ int (*send_packet_to_upper_layer)(struct sk_buff *skb) = netif_rx ;
 #include "./8192cd_rx.h"
 #include "./8192cd_debug.h"
 
+#ifdef __KERNEL__
+/* Linux 7.3 removed strncpy() from the kernel API. The legacy RTL8192CD
+ * objects still emit calls to it, so retain the exact padding semantics in
+ * this built-in driver without exporting the symbol to modules. */
+char *strncpy(char *dest, const char *src, size_t n)
+{
+	size_t i;
+
+	for (i = 0; i < n && src[i]; i++)
+		dest[i] = src[i];
+	for (; i < n; i++)
+		dest[i] = '\0';
+	return dest;
+}
+#endif
+
 #include "WlanHAL/HalPrecomp.h"
 
 #if defined(CONFIG_WLAN_HAL)
@@ -20545,4 +20561,3 @@ module_init(rtl8192cd_init);
 module_exit(rtl8192cd_exit);
 #endif /* #if defined(CONFIG_RTL_ULINKER_WLAN_DELAY_INIT) */
 #endif
-

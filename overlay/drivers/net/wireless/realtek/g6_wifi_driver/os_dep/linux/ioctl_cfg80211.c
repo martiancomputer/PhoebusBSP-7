@@ -8731,7 +8731,11 @@ static int cfg80211_rtw_mgmt_tx(struct wiphy *wiphy,
 #else
 	struct cfg80211_mgmt_tx_params *params,
 #endif
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
+	u64 cookie)
+#else
 	u64 *cookie)
+#endif
 {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)) || defined(COMPAT_KERNEL_RELEASE)
 	struct ieee80211_channel *chan = params->chan;
@@ -8837,8 +8841,10 @@ static int cfg80211_rtw_mgmt_tx(struct wiphy *wiphy,
 	dvobj = adapter_to_dvobj(padapter);
 	pwdev_priv = adapter_wdev_data(padapter);
 
-	/* cookie generation */
+	/* Linux 7.3 allocates the cookie in cfg80211 before calling the driver. */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(7, 3, 0))
 	*cookie = pwdev_priv->mgmt_tx_cookie++;
+#endif
 	RTW_INFO(FUNC_ADPT_FMT" TX MGNT @%uMHz CH%u %zuB W%u A%u",
 	         FUNC_ADPT_ARG(padapter), tx_freq, tx_ch, len, wait,
 	         wait_ack);
@@ -8866,7 +8872,13 @@ static int cfg80211_rtw_mgmt_tx(struct wiphy *wiphy,
 	if (frame_styp != RTW_IEEE80211_STYPE_ASSOC_RESP && frame_styp != RTW_IEEE80211_STYPE_REASSOC_RESP) {
 		/* indicate ack before issue frame to avoid racing with rsp frame */
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) || defined(COMPAT_KERNEL_RELEASE)
-		rtw_cfg80211_mgmt_tx_status(wdev, *cookie, buf, len, ack, GFP_KERNEL);
+		rtw_cfg80211_mgmt_tx_status(wdev,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
+			cookie,
+#else
+			*cookie,
+#endif
+			buf, len, ack, GFP_KERNEL);
 #elif (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 34) && LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 36))
 		cfg80211_action_tx_status(ndev, *cookie, buf, len, ack, GFP_KERNEL);
 #endif
@@ -11767,7 +11779,12 @@ void rtw_cfg80211_external_auth_status(struct wiphy *wiphy, struct net_device *d
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 3, 0))
 int cfg80211_rtw_probe_client(struct wiphy *wiphy, struct net_device *dev,
-				const u8 *peer, u64 *cookie)
+				const u8 *peer,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
+				u64 cookie)
+#else
+				u64 *cookie)
+#endif
 {
 	_adapter *padapter = (_adapter *)rtw_netdev_priv(dev);
 	struct sta_priv *pstapriv = &padapter->stapriv;
@@ -11805,11 +11822,18 @@ int cfg80211_rtw_probe_client(struct wiphy *wiphy, struct net_device *dev,
 	RTW_INFO("["FUNC_ADPT_FMT"]STA "MAC_FMT" active, macid = %d, expire_to = %d\n",
 		FUNC_ADPT_ARG(padapter), MAC_ARG(peer), target_sta->phl_sta->macid, target_sta->expire_to);
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(7, 3, 0))
 	*cookie = target_sta->phl_sta->macid;
+#endif
 
 	/* STA is alive if in asoc list */
-	cfg80211_probe_status(dev, peer, target_sta->phl_sta->macid, _TRUE,
-			      0, false, GFP_KERNEL);
+	cfg80211_probe_status(dev, peer,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
+			      cookie, -1,
+#else
+			      target_sta->phl_sta->macid,
+#endif
+			      _TRUE, 0, false, GFP_KERNEL);
 	return 0;
 }
 #endif
@@ -12096,7 +12120,9 @@ struct cfg80211_ops rtw_cfg80211_ops = {
 #if defined(CPTCFG_VERSION) || (KERNEL_VERSION(4, 17, 0) <= LINUX_VERSION_CODE)
 	.external_auth = cfg80211_rtw_external_auth,
 #endif
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 3, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
+	.probe_peer = cfg80211_rtw_probe_client,
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 3, 0))
 	.probe_client = cfg80211_rtw_probe_client,
 #endif
 	.set_antenna = ph_set_antenna,
