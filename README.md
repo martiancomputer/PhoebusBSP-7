@@ -14,21 +14,22 @@ Shared vendor code, userspace, provisioning and tooling live in
 
 ## Verification boundary
 
-Do not read "builds on 7.3-rc3" as "fully verified on 7.3-rc3 hardware."
+Linux **7.3-rc3 has been booted and exercised on the RTL9607C hardware**.
 
-The last explicitly documented mainline hardware verification is from the 7.1.5
-bring-up: 4-way SMP, console, GPIO/watchdog, switch/xPON core, FleetConntrack,
-PCIe, the s6 userspace stack, both radios probing with RF data loaded, and
-5 GHz SAE authentication/association completing.
+The current mainline image completed a roughly **5-hour continuous hardware run**
+with the kernel and router userspace active. The run ended when the Linux
+conntrack table filled because the port was using the wrong cleanup ABI, so
+expired entries were not being reclaimed correctly.
 
-Everything after that is tracked separately as forward-ported work until it is
-re-tested on silicon. The current 7.3-rc3 tree includes the later LAN/WAN,
-2.4 GHz, Wi-Fi, userspace and read-only NAND work, but the 7.3 port itself has
-not yet been recorded here as hardware-verified.
+A cleanup-ABI correction exists locally and will be pushed separately. It is not
+part of this documentation commit and still needs a fresh hardware retest.
 
-That distinction is intentional: compile/link/symbol verification is evidence
-that the port is structurally intact, not evidence that the board behaves
-correctly.
+The earlier 7.1.5 bring-up remains useful historical evidence for the individual
+subsystems, but it is no longer the newest hardware-verification boundary.
+
+Compile/link/symbol checks are still treated separately from runtime validation:
+the 7.3-rc3 port has now passed a sustained hardware run, while the conntrack
+cleanup defect remains the known failure exposed by that run.
 
 ## Scope
 
@@ -196,9 +197,10 @@ the failure into two cases:
 - no entry probe: the kernel/qdisc path never delivered the frame
 - entry probe but no EAPOL probe: the vendor driver swallowed it later
 
-That diagnostic predates the later forward-ports and has not been re-observed on
-7.3-rc3 hardware yet. Treat it as an open verification item, not as proof that
-7.3 currently has the identical failure.
+That diagnostic predates the later forward-ports. The current 7.3-rc3 image has
+now completed a multi-hour hardware run, but this specific old EAPOL probe has
+not yet been re-isolated with the same instrumentation. Treat the 7.1 result as
+historical evidence, not proof that 7.3 has the identical failure.
 
 ## Deliberate gaps
 

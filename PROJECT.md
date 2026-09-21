@@ -182,20 +182,25 @@ unconditionally expects private `rtk/` headers, so BSP-7 uses upstream 2.93.
 
 **Current target:** Linux **7.3-rc3**.
 
-**Last explicitly documented mainline hardware verification:** an early 7.1.5
-image (`#10`). Confirmed on silicon there: 4-CPU SMP, console, GPIO, watchdog,
-switch/xPON core, FleetConntrack, PCIe, both radios probing with RF tables
-loaded, the full s6 stack, and **5 GHz SAE authentication and association
-completing**.
+**Current mainline hardware verification:** the 7.3-rc3 image has been run on the
+RTL9607C hardware continuously for roughly **5 hours** with the kernel and router
+userspace active.
 
-Everything added after that remains a separate forward-port/verification queue
-until a newer boot is recorded. That includes the later 2.4 GHz fixes, switch
-PHY power-up, WAN/SDS0 path, skb recycle-pool removal, updated userspace, and
-the 7.3-rc3 read-only SPI-NAND MTD driver.
+The run ended when the Linux conntrack table filled. The failure was traced to
+the port calling the wrong conntrack cleanup ABI, so stale entries were not
+being reclaimed correctly. A correction has been committed locally but is not
+part of the pushed tree yet; it will be pushed separately and needs a fresh soak
+test afterwards.
 
-The 7.3 port itself is therefore currently a **build/forward-port state**, not a
-claim of complete silicon validation. The LTS line remains the reference for
-hardware behaviour.
+That 7.3 run supersedes the old 7.1.5 boot as the newest hardware-verification
+boundary. The earlier 7.1.5 results remain useful subsystem history: 4-CPU SMP,
+console, GPIO, watchdog, switch/xPON core, FleetConntrack, PCIe, both radios
+probing with RF tables loaded, the full s6 stack, and 5 GHz SAE
+authentication/association.
+
+Build/link/symbol verification is still kept distinct from runtime validation.
+The current mainline port has now passed sustained silicon runtime; the
+conntrack cleanup defect is the known failure exposed by that runtime.
 
 The current SDK submodule is the sanitized `e4c12263` history head used by both
 BSPs at the time of the 7.3-rc3 rebase.
@@ -213,7 +218,9 @@ run fl
 
 ## 6. The historical 7.1 mainline defect: 5 GHz EAPOL
 
-**Observed on the 7.1.5 hardware run; not yet re-verified on 7.3-rc3.**
+**Observed on the 7.1.5 hardware run. The 7.3-rc3 image has since completed a
+multi-hour hardware run, but this specific probe has not yet been re-isolated
+with the same instrumentation.**
 
 SAE completes (commit + confirm, status 0, PMKID cached). Association completes.
 Then hostapd times out after ~4.2 s and the driver deauths with reason 23,
@@ -314,11 +321,13 @@ the problem.** Hence:
 
 ## 9. Open threads
 
-1. **Boot 7.3-rc3 on hardware** and establish a new verification boundary.
-2. **5 GHz EAPOL probe** (§6) — determine whether the 7.1.5 failure still exists
-   on the current mainline tree before changing qdisc or driver policy around it.
-3. **Verification backlog** (§5) — re-test the later 2.4 GHz, LAN/WAN, SerDes,
-   skb-pool and userspace work on mainline silicon.
+1. **Push and retest the conntrack cleanup-ABI correction** — the current
+   7.3-rc3 soak reached roughly five hours before the table exhausted.
+2. **Repeat the 7.3 soak after that fix** and confirm conntrack entry lifetime,
+   reclamation and long-duration routing behaviour.
+3. **5 GHz EAPOL probe** (§6) — determine whether the historical 7.1.5 failure
+   still exists on the current mainline tree before changing qdisc or driver
+   policy around it.
 4. **CAKE/tc integration** — the current SDK carries the CAKE service, but BSP-7
    deliberately lacks `sch_cake` and a built `tc`.
 5. **The bundle guard** (§8) — it still derives longrun executables from `run`
