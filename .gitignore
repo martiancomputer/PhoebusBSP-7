@@ -14,3 +14,6 @@ __pycache__/
 # Internal bring-up notes; do not publish.
 /PORT_NOTES.md
 /tools/tftp.env
+
+# Local README draft, reviewed before it replaces README.md.
+/proposal.md
