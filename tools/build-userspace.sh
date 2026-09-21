@@ -384,9 +384,12 @@ for ent in "nobody:etc/passwd" "nogroup:etc/group"; do
 	}
 done
 
-# --- 9. the SDK's rootfs/usr, which build-rootfs.sh never copies -----------
+# --- 9. refresh the SDK's tracked rootfs/usr skeleton -----------------------
+# build-rootfs.sh already copies this tree. Re-copy it here deliberately after
+# the BSP userspace build so tracked SDK helpers/scripts remain authoritative if
+# either stage touched the same output paths. In particular,
 # usr/share/udhcpc/default.script is what `udhcpc -s` execs; without it the WAN
-# gets a lease and never configures the interface.
+# can obtain a lease but never configure the interface.
 if [ -d "$BSP/sdk/rootfs/usr" ]; then
 	say "sdk rootfs/usr (udhcpc default.script, phoebus-check)"
 	cp -a "$BSP/sdk/rootfs/usr/." "$OUT/usr/"
