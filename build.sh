@@ -95,6 +95,7 @@ cp -a "$SDK/vendor/include/dt-bindings/soc/9607xc_irqs.h"        "$K/include/dt-
 # (overlay/ holds the exact ported sources — robust against the CRLF/fuzz that a
 #  unified-diff patch trips on; docs/port-vs-upstream-*.diff is the human changelog)
 cp -a "$BSP/overlay/." "$K/"
+patch -d "$K" -p1 < "$BSP/patches/proc-entry-inode-id.patch"
 
 # --- 5. rootfs (BEFORE the kernel: the initramfs is baked in during the kernel build) ---
 "$SDK/rootfs/build-rootfs.sh" "$WORK/rootfs-tree"
@@ -119,6 +120,25 @@ sed -i "s|^CONFIG_INITRAMFS_SOURCE=.*|CONFIG_INITRAMFS_SOURCE=\"$WORK/rootfs-tre
 # host bc is required by the kernel build; the SDK ships a fallback if the host lacks it
 command -v bc >/dev/null 2>&1 || export PATH="$SDK/tools/hostbin:$PATH"
 make -C "$K" olddefconfig
+# FleetConntrack is deliberately a module so a bad accelerated path can be
+# removed without rebooting the router.  Install only the resulting module in
+# the initramfs; the normal module install machinery would copy every enabled
+# module and needlessly inflate this diagnostic image.
+make -C "$K" -j"$JOBS" uImage.lzma
+make -C "$K" -j"$JOBS" \
+	drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/rtk_fc.ko
+KREL=$(make -s -C "$K" kernelrelease)
+FC_KO=$(find "$K/drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver" \
+	-name rtk_fc.ko -print -quit)
+[ -n "$FC_KO" ] || { echo "ERROR: CONFIG_RTK_L34_FC_KERNEL_MODULE did not produce rtk_fc.ko" >&2; exit 1; }
+MODDIR="$WORK/rootfs-tree/lib/modules/$KREL/kernel/drivers/net/ethernet/realtek"
+mkdir -p "$MODDIR"
+cp "$FC_KO" "$MODDIR/rtk_fc.ko"
+printf 'kernel/drivers/net/ethernet/realtek/rtk_fc.ko:\n' > "$WORK/rootfs-tree/lib/modules/$KREL/modules.dep"
+# The first link supplies Module.symvers. Force regeneration of the embedded
+# archive now that rtk_fc.ko has been installed into its source directory.
+rm -f "$K/usr/initramfs_data.cpio" "$K/usr/initramfs_data.cpio.lz4" \
+	"$K/usr/initramfs_inc_data"
 make -C "$K" -j"$JOBS" uImage.lzma
 
 # --- 7. package ---

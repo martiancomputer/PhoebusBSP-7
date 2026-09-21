@@ -3,9 +3,9 @@
 #
 #   sudo ./tools/tftp-serve.sh [iface]
 #
-# The defaults use the documentation-only TEST-NET-1 range. Override them in
-# tools/tftp.env for the isolated board link when different addresses are
-# required. That file is deliberately ignored by Git.
+# Defaults match the RTL9607C board's isolated U-Boot link. Override them in
+# tools/tftp.env when using a different lab subnet. That file is deliberately
+# ignored by Git.
 #
 # Leave this running in its own terminal; it logs every TFTP request, so you can
 # see the board connect. Ctrl-C to stop.
@@ -15,9 +15,9 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 TFTP_ENV_FILE=${TFTP_ENV_FILE:-$SCRIPT_DIR/tftp.env}
 [ ! -f "$TFTP_ENV_FILE" ] || . "$TFTP_ENV_FILE"
 
-HOST_CIDR=${TFTP_HOST_CIDR:-192.0.2.2/24}
+HOST_CIDR=${TFTP_HOST_CIDR:-192.168.7.2/24}
 HOST=${HOST_CIDR%/*}
-BOARD=${TFTP_BOARD_IP:-192.0.2.10}
+BOARD=${TFTP_BOARD_IP:-192.168.7.10}
 BOARD_MAC=${TFTP_BOARD_MAC:-}
 IMAGES=$(cd "$(dirname "$0")/../images" && pwd)
 

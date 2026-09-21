@@ -36,8 +36,6 @@
 #include "rtk_fc_mgr.h"
 #include "rtk_fc_assistant.h"
 
-#include "internal.h"
-
 #if defined(CONFIG_RTK_L34_XPON_PLATFORM)
 #include <rtk/trap.h>
 #include <rtk/cpu.h>
@@ -3599,7 +3597,7 @@ struct proc_dir_entry *rtk_fc_mgr_proc_create_data(const char *name, umode_t mod
 
 unsigned int rtk_fc_mgr_proc_inode_id_get(struct proc_dir_entry *pProc_dir)
 {
-	return pProc_dir->low_ino;
+	return proc_entry_inode_id(pProc_dir);
 }
 
 void *rtk_fc_mgr_timer_list_kmalloc(void)
@@ -4040,4 +4038,3 @@ int rtk_fc_skb_set_pkt_priority(struct sk_buff *skb,uint32 priority)
 	
 	return SUCCESS;
 }
-

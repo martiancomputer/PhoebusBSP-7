@@ -1519,6 +1519,7 @@ struct net_device* decideRxDevice(struct re_private *cp, struct rx_info *pRxInfo
 
 EXPORT_SYMBOL(decideRxDevice);
 EXPORT_SYMBOL(dynamic_sram_desc);
+EXPORT_SYMBOL(nic_decide_rx_device_by_spa);
 #endif
 
 #endif
@@ -12802,4 +12803,3 @@ EXPORT_SYMBOL(re8686_set_pauseBySw);
 EXPORT_SYMBOL(re8686_set_vlan_register);
 EXPORT_SYMBOL(re8686_get_vlan_register);	
 EXPORT_SYMBOL(re8686_customized_rx_and_tx);
-

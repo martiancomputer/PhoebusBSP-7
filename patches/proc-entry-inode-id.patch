@@ -1,0 +1,29 @@
+diff --git a/include/linux/proc_fs.h b/include/linux/proc_fs.h
+--- a/include/linux/proc_fs.h
++++ b/include/linux/proc_fs.h
+@@ -9,5 +9,9 @@
+
+ struct proc_dir_entry;
++
++/* Read-only accessor for modules that share proc_ops between entries. */
++unsigned int proc_entry_inode_id(const struct proc_dir_entry *pde);
++
+ struct seq_file;
+ struct seq_operations;
+
+diff --git a/fs/proc/generic.c b/fs/proc/generic.c
+--- a/fs/proc/generic.c
++++ b/fs/proc/generic.c
+@@ -29,6 +29,12 @@
+
+ #include "internal.h"
+
++unsigned int proc_entry_inode_id(const struct proc_dir_entry *pde)
++{
++	return pde ? pde->low_ino : 0;
++}
++EXPORT_SYMBOL_GPL(proc_entry_inode_id);
++
+ static DEFINE_RWLOCK(proc_subdir_lock);
+
+ struct kmem_cache *proc_dir_entry_cache __ro_after_init;
