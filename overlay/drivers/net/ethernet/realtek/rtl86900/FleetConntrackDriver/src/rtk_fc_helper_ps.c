@@ -362,7 +362,12 @@ int  rtk_fc_ct_timer_refresh(struct nf_conn *ct)
 int  rtk_fc_ct_flush(void)
 {
 #if IS_ENABLED(CONFIG_NF_CONNTRACK)
+	u32 before = nf_conntrack_count(&init_net);
+
+	pr_info("rtk_fc: conntrack flush begin: %u entries\n", before);
 	rtk_fc_g_nf_ct_iterate_cleanup(&init_net, kill_all, NULL, 0, 0);
+	pr_info("rtk_fc: conntrack flush complete: %u -> %u entries\n",
+		before, nf_conntrack_count(&init_net));
 #endif
 	return SUCCESS;
 }
