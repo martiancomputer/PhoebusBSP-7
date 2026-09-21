@@ -1,9 +1,10 @@
-# Phoebus-OS — Linux 7.1 mainline on the RTL9607C
+# Phoebus-OS — current mainline on the RTL9607C
 
 The **mainline** half of Phoebus-OS: the same board support package as
 [PhoebusBSP-6](https://github.com/martiancomputer/PhoebusBSP-6), carried forward
-from **6.18.39 LTS** to **7.1.5**, on a **TP-Link Archer AX10 v3 / AX1500** whose
-SoC (Realtek RTL9607C) has never been supported by any mainline or OpenWrt tree.
+from **6.18.39 LTS** through the original **7.1.5** port and now to
+**7.3-rc3**, on a **TP-Link Archer AX10 v3 / AX1500** whose SoC (Realtek
+RTL9607C) has never been supported by any mainline or OpenWrt tree.
 
 **This is not OpenWrt.** No shared code, build system or package format.
 OpenWrt's `realtek` target covers the RTL838x/839x/930x *switch* SoCs; the 9607C
@@ -24,21 +25,21 @@ They are deliberately not restated here. Two copies of the same hardware notes
 drift, and this project has already been bitten several times by exactly that —
 a committed overlay that no longer matched the tree that built, a README status
 line that stayed true for a week. This file covers only what is genuinely
-different about the 7.1 line.
+different about the moving mainline line.
 
 ---
 
 ## 1. Why two kernel lines at all
 
 6.18 is an LTS: it is where the board is *made to work*, because a defect there
-is a defect in the driver rather than in the kernel underneath it. 7.1 is
-mainline: it is where the port is *kept honest*, because every release deletes
-some API the vendor tree still relies on, and finding that out on a two-year
-cadence is far more expensive than finding it out continuously.
+is a defect in the driver rather than in the kernel underneath it. BSP-7 tracks
+mainline: it is where the port is *kept honest*, because upstream keeps changing
+the APIs the vendor tree relies on, and finding that out continuously is cheaper
+than discovering it after a multi-year gap.
 
 The practical rule that has emerged:
 
-> **Fix it on 6.18, then forward-port to 7.1.**
+> **Fix it on 6.18, then forward-port to the current BSP-7 kernel.**
 
 Hardware debugging happens once, on the LTS line, against a kernel that is not
 also moving. BSP-7 then takes the result. Every driver fix in this repo's history
@@ -59,7 +60,7 @@ Phoebus-SDK ──── pristine vendor code, rootfs, s6 tree, tooling. No kern
    ▼              ▼
 PhoebusBSP-6   PhoebusBSP-7        each: a defconfig + an overlay/ + a build.sh
 overlay vs      overlay vs
-6.18.39         7.1.5
+6.18.39         current KVER (7.3-rc3)
 ```
 
 Three repositories, one shared vendor snapshot:
@@ -68,11 +69,11 @@ Three repositories, one shared vendor snapshot:
 |---|---|
 | **Phoebus-SDK** (submodule at `sdk/`) | vendor drivers, rootfs skeleton, s6 service tree, `s6-hpd`, provisioning, tooling |
 | **PhoebusBSP-6** | defconfig + `overlay/` against 6.18.39 |
-| **PhoebusBSP-7** (this) | defconfig + `overlay/` against 7.1.5, **120 files** |
+| **PhoebusBSP-7** (this) | defconfig + `overlay/` against the current mainline target (7.3-rc3) |
 
 ### The overlay contract
 
-`overlay/` mirrors paths under `linux-7.1.5/`. A build is:
+`overlay/` mirrors paths under the selected upstream kernel. The current default is `linux-7.3-rc3/`. A build is:
 
 ```
 pristine kernel.org tarball
@@ -106,7 +107,7 @@ Wi-Fi graft here for several commits.
 
 ---
 
-## 3. What 6.18 → 7.1 actually cost
+## 3. What 6.18 → 7.1 actually cost (historical baseline)
 
 Written up in full in [`docs/porting-6.18-to-7.1.md`](docs/porting-6.18-to-7.1.md).
 The summary, because the size of it is the interesting part:
@@ -146,13 +147,13 @@ SKIP_USERSPACE=1 ./build.sh    # NOT a shortcut — see below
 Pipeline:
 
 1. fetch toolchain (bootlin `mips32--glibc--stable-2025.08-1`, GCC 14.3)
-2. download pristine `linux-7.1.5` from kernel.org
+2. obtain pristine `linux-$KVER` (7.3-rc3 by default; RCs from Linus's kernel.org Git tree, stable releases from kernel.org tarballs)
 3. graft `sdk/vendor/*` — **including `realtek-wireless`**, which supplies the
    `drivers/net/wireless/realtek/{Kconfig,Makefile}` pair that sources the two
    vendor drivers. Without it the build silently produces a kernel with no radios
 4. apply `overlay/`
 5. `sdk/rootfs/build-rootfs.sh` → rootfs tree
-6. `tools/build-userspace.sh` → the userspace the SDK does not install
+6. `tools/build-userspace.sh` → BSP-7's network-facing userspace layer
 7. configure, `olddefconfig`, build, package `uImage.lzma`
 
 `SKIP_USERSPACE=1` skips step 6 and the rootfs is rebuilt from scratch every run,
@@ -163,40 +164,43 @@ s6 bundle references all of them. It is for kernel-only iteration, not a fast pa
 
 BSP-6 has no equivalent; its userspace comes from binaries already sitting in the
 working tree, which is why its clean-clone image is incomplete. This script
-cross-builds libnl, OpenSSL, hostapd 2.11 (SAE), iptables, libxcrypt, dropbear,
-wireless_tools and dnsmasq 2.90, then runs two guards:
+cross-builds libnl, OpenSSL, hostapd 2.12 (SAE), iptables, libxcrypt, Dropbear
+2026.94, wireless_tools and dnsmasq 2.93, then runs two guards:
 
 - **every binary the boot bundle execs must exist**
 - **every `DT_NEEDED` library must resolve** — name-matching is not enough, a
   dangling symlink passes that and fails at exec
 
-Sources come from the vendor GPL drop, with one exception: the drop's
-`dnsmasq-2.85` is Realtek-patched (`#include <rtk/options.h>`, and no `rtk/`
-headers ship anywhere in it), so upstream 2.90 is fetched and pinned by sha256.
+Hardware-specific source still comes from the vendor GPL drop. Security-facing
+daemons are fetched from pinned upstream release archives. The vendor
+`dnsmasq-2.85` remains unusable outside Realtek's build tree because it
+unconditionally expects private `rtk/` headers, so BSP-7 uses upstream 2.93.
 
 ---
 
 ## 5. State
 
-**Last verified on hardware:** an early 7.1.5 image (`#10`). Confirmed on silicon:
-4-CPU SMP, console, GPIO, watchdog, switch/xPON core, FleetConntrack, PCIe, both
-radios probing with RF tables loaded, the full s6 stack, and **5 GHz SAE
-authentication and association completing**.
+**Current target:** Linux **7.3-rc3**.
 
-**Built and symbol-verified but NOT yet booted** — everything since:
+**Last explicitly documented mainline hardware verification:** an early 7.1.5
+image (`#10`). Confirmed on silicon there: 4-CPU SMP, console, GPIO, watchdog,
+switch/xPON core, FleetConntrack, PCIe, both radios probing with RF tables
+loaded, the full s6 stack, and **5 GHz SAE authentication and association
+completing**.
 
-- 2.4 GHz bring-up (25 MHz crystal, `rfe2g=23`, 8192F RF power-on toggle)
-- switch PHY power-up (`SWITCH_INIT_LINKDOWN` off) — LAN ports should now forward
-- WAN on port 6 / `eth0.8` with `sds=0`, SerDes start, in-band autoneg, MAC-follows-PHY poller
-- the skb recycle pool removal that fixes the OOM
-- dnsmasq
+Everything added after that remains a separate forward-port/verification queue
+until a newer boot is recorded. That includes the later 2.4 GHz fixes, switch
+PHY power-up, WAN/SDS0 path, skb recycle-pool removal, updated userspace, and
+the 7.3-rc3 read-only SPI-NAND MTD driver.
 
-That backlog is the honest headline: **BSP-7 currently has more unverified
-forward-ported work than verified work.** All of it is confirmed on 6.18
-hardware, and each piece is symbol-checked in this image, but symbol-checked is
-not booted.
+The 7.3 port itself is therefore currently a **build/forward-port state**, not a
+claim of complete silicon validation. The LTS line remains the reference for
+hardware behaviour.
 
-Current image: `images/uImage`, 13,747,414 B, md5 `46ec20ed5c06fb057c34666af89e166e`.
+The current SDK submodule is the sanitized `e4c12263` history head used by both
+BSPs at the time of the 7.3-rc3 rebase.
+
+Typical RAM-boot arguments remain:
 
 ```
 setenv bootargs 'console=ttyS0,115200 loglevel=8 phoebus_verbose ethaddr=<board-base-MAC> rfe2g=23 sds=0 wan=eth0.8 lan=eth0.2,eth0.3,eth0.4,eth0.5'
@@ -207,9 +211,9 @@ run fl
 
 ---
 
-## 6. The live defect: 5 GHz EAPOL
+## 6. The historical 7.1 mainline defect: 5 GHz EAPOL
 
-**7.1-specific, and the reason this repo is not simply "BSP-6 but newer".**
+**Observed on the 7.1.5 hardware run; not yet re-verified on 7.3-rc3.**
 
 SAE completes (commit + confirm, status 0, PMKID cached). Association completes.
 Then hostapd times out after ~4.2 s and the driver deauths with reason 23,
@@ -254,13 +258,17 @@ Tracked because an undocumented divergence looks like an oversight later.
 
 | | BSP-7 | why |
 |---|---|---|
-| CAKE/SQM kernel stack | **absent** | deferred so the qdisc layer stays still while the EAPOL bug is open. SDK `70d8f0d` now needs it, so this is due |
-| `tc` | not built | same; the SDK ships `net/build-tc.sh` but `build-rootfs.sh` does not call it |
-| dnsmasq | 2.90, sha256-pinned | the vendor drop's 2.85 cannot build outside Realtek's tree |
-| `CONFIG_RUSTC_*` | left at 0 | BSP-6's defconfig carries values `olddefconfig` detected on one build host; they are wrong elsewhere and regenerate anyway |
+| CAKE/SQM kernel stack | **absent** | still deferred while the mainline Wi-Fi TX/EAPOL path is unresolved; the current SDK has the service, but this defconfig leaves `CONFIG_NET_SCH_CAKE` off |
+| `tc` | not built | BSP-7's userspace builder does not currently invoke the SDK's `net/build-tc.sh` |
+| hostapd | 2.12, sha256-pinned | security-facing daemon is built from a current upstream release |
+| dnsmasq | 2.93, sha256-pinned | the vendor 2.85 tree depends on private Realtek headers that are not shipped |
+| Dropbear | 2026.94, sha256-pinned | security-facing daemon is built from a current upstream release |
+| read-only SPI-NAND MTD | **present on 7.3** | observation/validation only; no program, erase, markbad or automatic UBI attach |
+| `CONFIG_RUSTC_*` | left at 0 | host-detected values do not belong in a portable defconfig and regenerate through `olddefconfig` |
 
-SDK pin is `f422ec3`, **9 commits behind** `398589e`. Catching up brings CAKE,
-802.11ax and 80 MHz on 5 GHz, baked admin SSH keys, and the `tc` requirement.
+The SDK submodule is current at `e4c12263` for this rebase. Future catch-up
+should be evaluated as an explicit dependency change rather than inferred from
+branch names.
 
 ---
 
@@ -306,15 +314,23 @@ the problem.** Hence:
 
 ## 9. Open threads
 
-1. **5 GHz EAPOL** (§6) — the live 7.1 defect. One boot with the probe splits it.
-2. **Verification backlog** (§5) — four forward-ported fixes built but never booted.
-3. **SDK catch-up** — 9 commits, and CAKE needs kernel symbols this BSP does not
-   have plus a `tc` that nothing builds.
-4. **The bundle guard** (§8) — must read oneshot `up` files and glob
-   `etc/s6/scripts/*-up` instead of naming two scripts.
-5. **README drift** — `README.md`'s status section predates the Wi-Fi boots and
-   now understates the port. This file supersedes it; the README should shrink to
-   build-and-boot instructions.
-6. **Inherited from the board, not the kernel line** — flow accelerator
-   (`DEV_STACK_MAX[4]` overflow), no MTD driver so RAM boot only, and vendor
-   userspace still building from trees outside the repos. See BSP-6's PROJECT.md.
+1. **Boot 7.3-rc3 on hardware** and establish a new verification boundary.
+2. **5 GHz EAPOL probe** (§6) — determine whether the 7.1.5 failure still exists
+   on the current mainline tree before changing qdisc or driver policy around it.
+3. **Verification backlog** (§5) — re-test the later 2.4 GHz, LAN/WAN, SerDes,
+   skb-pool and userspace work on mainline silicon.
+4. **CAKE/tc integration** — the current SDK carries the CAKE service, but BSP-7
+   deliberately lacks `sch_cake` and a built `tc`.
+5. **The bundle guard** (§8) — it still derives longrun executables from `run`
+   files and checks only named oneshot scripts; it should cover every oneshot
+   `up` file and the full `etc/s6/scripts/*-up` set.
+6. **Read-only NAND validation** — 7.3 now has an RTL9607C SPI-NAND MTD reader;
+   ECC, physical offsets and bad-block behaviour must be independently verified
+   before any write/install path exists.
+7. **Inherited board limitation** — FleetConntrack hardware offload still cannot
+   correctly represent the PCIe Wi-Fi path (`DEV_STACK_MAX[4]` overflow), so
+   routed forwarding remains software-only for the working topology.
+
+The 6.18 BSP remains the hardware reference; mainline changes should continue to
+be proven there first when the defect is board/driver behaviour rather than an
+upstream API change.

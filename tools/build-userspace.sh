@@ -1,10 +1,13 @@
 #!/bin/bash
-# Cross-build the userspace the s6 boot bundle needs but the SDK's
-# rootfs/build-rootfs.sh does not install: hostapd (+libnl), iptables, dropbear, dnsmasq,
-# wireless_tools. Also copies the SDK's rootfs/usr/ tree, which build-rootfs.sh
-# never copies.
+# Cross-build BSP-7's network-facing userspace layer.
 #
-# Without this, a clean build boots with working radios and no way to use them:
+# The shared SDK now installs its tracked rootfs/usr tree and can build
+# wireless_tools when a suitable source tree is available. This script remains
+# responsible for the complete BSP-7 networking set: hostapd (+libnl), iptables,
+# dropbear/libxcrypt, dnsmasq, and a deterministic vendor wireless_tools build.
+#
+# Historically, omitting this stage produced a clean build with working radios
+# and no usable router services:
 #   ./run: exec: line 4: hostapd: not found
 #   ./run: line 21: dropbearkey: not found      -> dropbear: ECDSA keygen FAILED
 #   /etc/s6/scripts/nat-up: line 21: iptables: not found   (x12, NAT dead)
@@ -38,9 +41,9 @@ if [ -z "$VENDOR_SDK" ]; then
 	done
 fi
 
-# Fail loudly rather than skipping. The SDK's wireless_tools block guards on an
-# unset $WT_SRC, so `[ -d "" ]` is always false and it has silently never run --
-# do not repeat that.
+# Fail loudly rather than relying on an SDK-side optional wireless_tools build.
+# BSP-7 uses the explicitly located vendor tree below so iwpriv availability is
+# deterministic; the Realtek private MIB is part of the board bring-up path.
 WT_SRC="$VENDOR_SDK/user/wireless_tools"
 # dnsmasq is the one source NOT taken from the vendor drop. The drop's
 # dnsmasq-2.85 is Realtek-patched -- src/dnsmasq.h unconditionally does

@@ -4,7 +4,7 @@
 # Reconstructs the ported kernel tree from three ingredients:
 #   1. pristine upstream linux-${KVER} (downloaded)
 #   2. pristine vendor SoC code from the Phoebus-SDK submodule (grafted in)
-#   3. our 7.1 port, applied as the overlay/ tree
+#   3. the current BSP port, applied as the overlay/ tree
 # then configures, builds, and packages a U-Boot image.
 #
 # Usage: ./build.sh              # full build -> images/
@@ -91,7 +91,7 @@ cp -a "$SDK/vendor/include/net/rtl"                              "$K/include/net
 cp -a "$SDK/vendor/include/soc/cortina"                          "$K/include/soc/"
 cp -a "$SDK/vendor/include/dt-bindings/soc/9607xc_irqs.h"        "$K/include/dt-bindings/soc/"
 
-# --- 4. apply the 7.1 port: overlay the ported versions of changed files ---
+# --- 4. apply the current port: overlay the ported versions of changed files ---
 # (overlay/ holds the exact ported sources — robust against the CRLF/fuzz that a
 #  unified-diff patch trips on; docs/port-vs-upstream-*.diff is the human changelog)
 cp -a "$BSP/overlay/." "$K/"
@@ -99,11 +99,13 @@ cp -a "$BSP/overlay/." "$K/"
 # --- 5. rootfs (BEFORE the kernel: the initramfs is baked in during the kernel build) ---
 "$SDK/rootfs/build-rootfs.sh" "$WORK/rootfs-tree"
 
-# --- 5b. the userspace the SDK's rootfs builder does not install -----------
-# hostapd, iptables, dropbear, the iw* tools and rootfs/usr/ are all referenced
-# by the shipped s6 services but never built or copied by build-rootfs.sh, so
-# without this the image boots both radios and cannot use them. Set SKIP_USERSPACE=1
-# for a kernel-only build; VENDOR_SDK points at the unpacked Realtek GPL drop.
+# --- 5b. BSP-7 network userspace -------------------------------------------
+# The SDK builds the shared BusyBox/s6 rootfs and now installs its tracked /usr
+# skeleton (and can build wireless_tools when its source is available). BSP-7
+# still owns the network-facing third-party build here: hostapd/libnl, iptables,
+# dropbear/libxcrypt, dnsmasq and the vendor wireless_tools fallback.
+# Set SKIP_USERSPACE=1 only for kernel iteration; that image is not a complete
+# router userspace. VENDOR_SDK points at the unpacked Realtek GPL drop.
 if [ -z "$SKIP_USERSPACE" ]; then
 	"$BSP/tools/build-userspace.sh" "$WORK/rootfs-tree"
 fi
