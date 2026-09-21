@@ -188,9 +188,10 @@ userspace active.
 
 The run ended when the Linux conntrack table filled. The failure was traced to
 the port calling the wrong conntrack cleanup ABI, so stale entries were not
-being reclaimed correctly. A correction has been committed locally but is not
-part of the pushed tree yet; it will be pushed separately and needs a fresh soak
-test afterwards.
+being reclaimed correctly. The correction is now pushed in commit
+`52b02eaa29a6` (`net: repair FleetConntrack table flush`). A fresh multi-hour
+soak is still required to verify conntrack entry lifetime and reclamation after
+the fix.
 
 That 7.3 run supersedes the old 7.1.5 boot as the newest hardware-verification
 boundary. The earlier 7.1.5 results remain useful subsystem history: 4-CPU SMP,
@@ -321,9 +322,10 @@ the problem.** Hence:
 
 ## 9. Open threads
 
-1. **Push and retest the conntrack cleanup-ABI correction** — the current
-   7.3-rc3 soak reached roughly five hours before the table exhausted.
-2. **Repeat the 7.3 soak after that fix** and confirm conntrack entry lifetime,
+1. **Retest the pushed conntrack cleanup-ABI correction** (`52b02eaa29a6`) —
+   the previous 7.3-rc3 soak reached roughly five hours before the table
+   exhausted.
+2. **Repeat the 7.3 soak after the fix** and confirm conntrack entry lifetime,
    reclamation and long-duration routing behaviour.
 3. **5 GHz EAPOL probe** (§6) — determine whether the historical 7.1.5 failure
    still exists on the current mainline tree before changing qdisc or driver
