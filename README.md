@@ -21,8 +21,10 @@ with the kernel and router userspace active. The run ended when the Linux
 conntrack table filled because the port was using the wrong cleanup ABI, so
 expired entries were not being reclaimed correctly.
 
-A cleanup-ABI correction exists locally and will be pushed separately. It is not
-part of this documentation commit and still needs a fresh hardware retest.
+The cleanup-ABI correction is now pushed in commit `52b02eaa29a6`
+(`net: repair FleetConntrack table flush`). It still needs a fresh multi-hour
+hardware soak to confirm that conntrack entries are reclaimed correctly over
+long runtimes.
 
 The earlier 7.1.5 bring-up remains useful historical evidence for the individual
 subsystems, but it is no longer the newest hardware-verification boundary.
