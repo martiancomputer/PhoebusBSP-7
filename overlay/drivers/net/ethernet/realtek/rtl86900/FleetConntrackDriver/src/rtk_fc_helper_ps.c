@@ -112,7 +112,7 @@ static inline int br_ip_equal(const struct br_ip *a, const struct br_ip *b)
 	return 0;
 }
 
-#if 0 // not support 
+#if 0 // not support
 int  rtk_fc_neigh_for_each_write(struct neigh_table *tbl, int (*cb)(struct neighbour *, unsigned char *), unsigned char *mac)
 {
 	int chain;
@@ -208,7 +208,7 @@ int rtk_fc_ct_protonum_get(struct nf_conn *ct, unsigned char *protonum)
 int rtk_fc_ct_session_alive_check(struct nf_conn *ct, bool *alive)
 {
 
-	if(atomic_read(&ct->ct_general.use)==0){
+	if(refcount_read(&ct->ct_general.use)==0){
 		goto DYING;
         }
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,14,0)
@@ -256,7 +256,7 @@ int rtk_fc_ct_helper_is_conenat_check(struct nf_conntrack_helper *helper)
 int  rtk_fc_ct_timer_refresh(struct nf_conn *ct)
 {
 #if IS_ENABLED(CONFIG_NF_CONNTRACK)
-	static unsigned int nf_ct_timeout;
+	unsigned int nf_ct_timeout;
 	unsigned long newtime;
 	#ifdef CONFIG_IPV6_MAPE_PSID_KERNEL_HOOK
 	extern __u32 ftp_alg_get_new_ct_timeout(void *nf_ct, __u8 state, __u32 ct_timeout);
@@ -265,7 +265,7 @@ int  rtk_fc_ct_timer_refresh(struct nf_conn *ct)
 	if (ct == NULL)
 		return FAIL;
 
-        if(atomic_read(&ct->ct_general.use)==0){
+        if(refcount_read(&ct->ct_general.use)==0){
 		//DEBUG("ct sync fail");
 		return FAIL;
         }
@@ -279,7 +279,7 @@ int  rtk_fc_ct_timer_refresh(struct nf_conn *ct)
 #endif
 	if(nf_ct_is_dying(ct))
 		return FAIL;
-	
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,14,0)
 
 #else
@@ -354,7 +354,7 @@ int  rtk_fc_ct_timer_refresh(struct nf_conn *ct)
 #endif
 
 	spin_unlock_bh(&ct->lock);
-	
+
 #endif
 	return SUCCESS;
 }
@@ -376,7 +376,7 @@ int rtk_fc_ct_tcp_liberal_set(struct nf_conn *ct)
 {
 	if(!ct)
 		return FAIL;
-	
+
 	spin_lock_bh(&ct->lock);
 
 	if(nf_ct_protonum(ct) == IPPROTO_TCP)
@@ -387,7 +387,7 @@ int rtk_fc_ct_tcp_liberal_set(struct nf_conn *ct)
 	}
 
 	spin_unlock_bh(&ct->lock);
-	
+
 	return SUCCESS;
 }
 
@@ -654,7 +654,7 @@ int rtk_fc_fdb_time_get(struct net_device *br_netdev, unsigned char *mac, unsign
 		return FAIL;
 
 	memset(fc_fdb, 0, sizeof(rtk_fc_fdb_entry_t));
-	
+
 	br = netdev_priv(br_netdev);
 
 	rtk_fc_g_rcu_read_lock();
@@ -1082,7 +1082,7 @@ RESCAN:
 
 	if(realdev == NULL || realdev->type == ARPHRD_PPP){
 		return FAIL;
-	}	
+	}
 
 	// find real dev
 #if defined(CONFIG_RTL_SMUX_DEV)
@@ -1132,9 +1132,9 @@ RESCAN:
 		if(cp) {
 			phyport = __ffs(cp->txPortMask);
 		}
-		
+
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,18,0)
-		if(cp && cp->pCp) {		
+		if(cp && cp->pCp) {
 			int portidx = 0;
 			for(portidx = 0; portidx < SW_PORT_NUM; portidx++) {
 				if(realdev == cp->pCp->port2dev[portidx]) {
@@ -1194,7 +1194,7 @@ struct net_device* rtk_fc_vlan_dev_get_real_dev(struct net_device *dev)
 int rtk_fc_copy_from_user(char *procBuffer, const char __user * userbuf, size_t count)
 {
 	int ret = 0;
-	
+
 	ret = copy_from_user(procBuffer, userbuf, count);
 	return ret;
 }
@@ -1384,7 +1384,7 @@ fail:
 
 int rtk_fc_mape_get_ipid(struct nf_conn *ct, uint16 *ipid)
 {
-#ifdef CONFIG_IPV6_MAPE_IPID_ADJUST	
+#ifdef CONFIG_IPV6_MAPE_IPID_ADJUST
 	uint16 port;
 
 	if (!ct || !ipid)
@@ -1401,7 +1401,7 @@ int rtk_fc_mape_get_ipid(struct nf_conn *ct, uint16 *ipid)
 	else
 #endif
 		return FAIL;
-			
+
 }
 
 int rtk_set_hw_csum(char *dev_name)
@@ -1533,7 +1533,7 @@ int rtk_fc_timer_mod_timer(rtk_fc_timer_list_t *pTimer, unsigned long expires)
 int rtk_fc_timer_setup_timer(rtk_fc_timer_list_t *pTimer, void * function, unsigned long data)
 {
 	pTimer->data = data;
-	
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
 	timer_setup(&pTimer->timer, function, 0);
 #else
@@ -1552,7 +1552,7 @@ unsigned long rtk_fc_timer_data_get(unsigned long callbackFunc_data)
 	return pTimerList->data;
 #else
 	return callbackFunc_data;
-#endif	
+#endif
 }
 
 int rtk_fc_rcu_get_bridgePort_by_dev(const struct net_device *dev, struct net_bridge_port **p)
@@ -1625,7 +1625,7 @@ int rtk_fc_helper_get_bridgePort_pvid(struct net_bridge_port *p, int *pvid)
 		*pvid = br_get_pvid(nbp_vlan_group_rcu(p));
 		//printk("pvid = %d\n",*pvid);
 	}
-	
+
 
 	return SUCCESS;
 
@@ -1662,7 +1662,7 @@ int rtk_fc_helper_mc_kernel_snooping_disable_get(struct net_bridge* br)
 	if(br && (br->multicast_disabled==1  || br->multicast_querier==0))
 #endif
 		return SUCCESS;
-	else 
+	else
 		return FAIL;
 #else
 	return FAIL;
@@ -1696,7 +1696,7 @@ int rtk_fc_rcu_indev_get_addr(struct net_device* dev, int *ipAddr)
 		} endfor_ifa(in_dev);
 #endif
 	}
-	
+
 
 	return SUCCESS;
 }
@@ -1820,12 +1820,12 @@ int rtk_fc_netdev_get_vxlan_dev_vni(struct net_device *dev, int *vni)
 	struct vxlan_dev *vxlan = NULL;
 	if(dev == NULL)
 		return FAIL;
-	
+
 	vxlan = netdev_priv(dev);
 	if(vxlan==NULL)
 		return FAIL;
 
-	
+
 	//printk("vxlan->default_dst->remote_vni: %d \n", vxlan->default_dst.remote_vni);
 	*vni = vxlan->default_dst.remote_vni;
 
@@ -1894,17 +1894,17 @@ int rtk_fc_netdev_compare_v6addr_by_v6AddrHash(struct net_device *dev, uint32 v6
 				FCMGR_ERR("ERROR direct %d\n", direct);
 				break;
 			}
-			
+
 			if(gateway_v6Hash==v6AddrHash)
 			{
 				found = TRUE;
 				break;
 			}
-			
+
 		}
 	}
 	rtk_fc_g_rcu_read_unlock();
-	
+
 	if(found==TRUE)
 		return SUCCESS;
 	else
@@ -1934,12 +1934,12 @@ int rtk_fc_netdev_compare_v6addr_by_v6Addr(struct net_device *dev, struct	in6_ad
 				found = TRUE;
 				break;
 			}
-			
+
 		}
 	}
 	rtk_fc_g_rcu_read_unlock();
-	
-	
+
+
 	if(found==TRUE)
 		return SUCCESS;
 	else
@@ -1964,9 +1964,9 @@ int rtk_fc_netdev_ignore_lookup(struct net_device *dev, unsigned long event)
 		       NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX | \
 		       NETIF_F_HW_VLAN_STAG_TX | NETIF_F_HW_VLAN_STAG_RX )
 #endif
-		       
+
 	int ignore = FALSE;
-		
+
 	if(!strncmp(dev->name, "lo", 2))
 		ignore = TRUE;
 	else if(dev->type == ARPHRD_IPGRE)
@@ -2055,7 +2055,7 @@ int rtk_fc_mgr_ingress_rps_set(uint16 mode, uint16 cpu_bit_maps, int *cpu_port_m
 		/*
 			Set CPU maps
 		*	E.g. set mask CPU 0 1 3 -> mask= b ( 0x1101 )
-		* 
+		*
 		*		fc_mgr_db.fc_rps_maps.cpus[0] =  0;
 		*		fc_mgr_db.fc_rps_maps.cpus[1] =  1;
 		*		fc_mgr_db.fc_rps_maps.cpus[2] =  3;
@@ -2068,7 +2068,7 @@ int rtk_fc_mgr_ingress_rps_set(uint16 mode, uint16 cpu_bit_maps, int *cpu_port_m
 				fc_mgr_db.fc_rps_maps.cpus[j++] = i;
 		}
 		fc_mgr_db.fc_rps_maps.len = j;
-	
+
 		/*
 		*	Set the complete bit map for better CPU distribution
 		*
@@ -2096,7 +2096,7 @@ int rtk_fc_mgr_ingress_rps_set(uint16 mode, uint16 cpu_bit_maps, int *cpu_port_m
 		for(i = j; i < 16; i++ )
 		{
 			fc_mgr_db.fc_rps_maps.cpus[i] = fc_mgr_db.fc_rps_maps.cpus[k++];
-			
+
 		}
 	}
 	else if (mode == RTK_FC_RPS_DISPATCH_MODE_PORT)
@@ -2115,7 +2115,7 @@ int rtk_fc_mgr_ingress_rps_set(uint16 mode, uint16 cpu_bit_maps, int *cpu_port_m
 				printk("Set port %d use cpu :%d\n",i,cpu_port_mapping_array[i]);
 				fc_mgr_db.fc_rps_maps.port_to_cpu[i] = cpu_port_mapping_array[i];
 			}
-		
+
 		}
 		for(i = 0;i < RTK_FC_MAC_PORT_MAX; i++)
 		{
@@ -2149,12 +2149,12 @@ int rtk_fc_mgr_ingress_rps_set(uint16 mode, uint16 cpu_bit_maps, int *cpu_port_m
 				fc_mgr_db.fc_rps_maps.cpus[j++] = i;
 		}
 		fc_mgr_db.fc_rps_maps.len = j;
-		
+
 		for(i = j; i < 16; i++ )
 		{
 			fc_mgr_db.fc_rps_maps.cpus[i] = fc_mgr_db.fc_rps_maps.cpus[k++];
 			printk("fc_mgr_db.fc_rps_maps.cpus[%d] = %d\n",i,fc_mgr_db.fc_rps_maps.cpus[i]);
-			
+
 		}
 		for(i = 0;i < RTK_FC_MAC_PORT_MAX; i++)
 		{
@@ -2167,7 +2167,7 @@ int rtk_fc_mgr_ingress_rps_set(uint16 mode, uint16 cpu_bit_maps, int *cpu_port_m
 				printk("Set port %d use cpu :%d\n",i,cpu_port_mapping_array[i]);
 				fc_mgr_db.fc_rps_maps.port_to_cpu[i] = cpu_port_mapping_array[i];
 			}
-		
+
 		}
 		for(i = 0;i < RTK_FC_MAC_PORT_MAX; i++)
 		{
@@ -2181,7 +2181,7 @@ int rtk_fc_mgr_ingress_rps_set(uint16 mode, uint16 cpu_bit_maps, int *cpu_port_m
 		printk("FC RPS OFF!\n");
 		fc_mgr_db.fc_rps_maps.len = 0;
 	}
-	
+
 	return SUCCESS;
 
 }
@@ -2702,7 +2702,7 @@ int rtk_fc_mgr_dispatchMode_set(rtk_fc_dispatch_mode_t dispatch_mode, uint32 mas
 		}
 	}
 
-	
+
 #endif
 
 	if((RTK_FC_MGR_DISPATCH_START <= dispatch_point) && (dispatch_point < RTK_FC_MGR_DISPATCH_MAX))
@@ -2890,7 +2890,7 @@ int rtk_fc_mgr_dispatchMode_set(rtk_fc_dispatch_mode_t dispatch_mode, uint32 mas
 #else
 			(dispatch_point <= RTK_FC_MGR_DISPATCH_WLANMLO_0_TX)
 #endif
-			) && 
+			) &&
 			((fc_mgr_db.smp_dispatch[dispatch_point].mode == RTK_FC_DISPATCH_MODE_SMP_BY_HASH) || (fc_mgr_db.smp_dispatch[dispatch_point].mode == RTK_FC_DISPATCH_MODE_SMP_BY_RR)))
 		{
 			int i;
@@ -2926,7 +2926,7 @@ int rtk_fc_mgr_dispatchMode_set(rtk_fc_dispatch_mode_t dispatch_mode, uint32 mas
 			rtk_fc_mgr_ingress_rps_set(RTK_FC_RPS_DISPATCH_MODE_IPSEC_SC, fc_mgr_db.smp_dispatch[dispatch_point].smp_id, cpu_port_mapping_array);
 		}
 	}
-	
+
 	return SUCCESS;
 }
 int rtk_fc_mgr_dispatch_smp_mode_wifi_tx_cpuId_get(uint8 *cpuId, uint16 *wifi_tx_dispatch_mode, uint32 hashIdx, rtk_fc_dispatch_point_t dispatch_point)
@@ -2979,7 +2979,7 @@ int rtk_fc_mgr_dispatchMode_get(rtk_fc_dispatch_mode_t *dispatch_mode, rtk_fc_di
 	if(fc_mgr_db.smp_dispatch[dispatch_point].mode == RTK_FC_DISPATCH_MODE_RPS || fc_mgr_db.smp_dispatch[dispatch_point].mode == RTK_FC_DISPATCH_MODE_SMP_IPSEC_SC)
 	{
 		printk("FC RPS use CPU: ");
-	
+
 		for(i = 0; i < NR_CPUS ; i++)
 		{
 			if( (fc_mgr_db.fc_rps_cpu_bit_mask)&(1<<i) )
@@ -2990,7 +2990,7 @@ int rtk_fc_mgr_dispatchMode_get(rtk_fc_dispatch_mode_t *dispatch_mode, rtk_fc_di
 	if(fc_mgr_db.smp_dispatch[dispatch_point].mode == RTK_FC_DISPATCH_MODE_SMP_BY_PORT || fc_mgr_db.smp_dispatch[dispatch_point].mode == RTK_FC_DISPATCH_MODE_SMP_IPSEC_SC)
 	{
 		int i ;
-		
+
 		for(i = 0;i < RTK_FC_MAC_PORT_MAX; i++)
 		{
 			if(fc_mgr_db.fc_rps_maps.port_to_cpu[i]!=-1)
@@ -3006,8 +3006,8 @@ int rtk_fc_mgr_ring_buffer_state_get(rtk_fc_mgr_dispatch_point_t func, rtk_fc_mg
 	int i;
 
 	i = 0;
-	
-	switch(func) 
+
+	switch(func)
 	{
 #if defined(CONFIG_RTK_L34_FC_IPI_NIC_RX)
 		case RTK_FC_MGR_DISPATCH_NIC_RX:
@@ -3017,7 +3017,7 @@ int rtk_fc_mgr_ring_buffer_state_get(rtk_fc_mgr_dispatch_point_t func, rtk_fc_mg
 						if(fc_mgr_db.nicrx_hi_ipi[i])
 						{
 							rtk_fc_nicrx_ipi_ctrl_t *smpnicrx = fc_mgr_db.nicrx_hi_ipi[i];
-						
+
 							state->free_idx = atomic_read(&smpnicrx->priv_free_idx);
 							state->sched_idx = atomic_read(&smpnicrx->priv_sched_idx);
 
@@ -3029,7 +3029,7 @@ int rtk_fc_mgr_ring_buffer_state_get(rtk_fc_mgr_dispatch_point_t func, rtk_fc_mg
 						else
 							printk("%-15s: cpu[%d] n.a.\n", "NIC Rx hiPri", i);
 					}
-					
+
 				}
 
 				for_each_possible_cpu(i) {
@@ -3389,7 +3389,7 @@ int rtk_fc_mgr_hwnat_mode_set(rt_flow_hwnat_mode_t hwnat_mode)
 		}
 		fc_mgr_db._rtk_fc_wifi_event_handling_cb_register(&event);
 	}
-	
+
 	fc_mgr_db.hwnat_mode = hwnat_mode;
 	return SUCCESS;
 }
@@ -3456,7 +3456,7 @@ int rtk_fc_mgr_sw_flow_mib_add(int flowTblIdx, rt_flow_op_sw_flow_mib_info_t cou
 		fc_mgr_db.sw_flow_mib[flowTblIdx].ingress_byte_count += counts.ingress_byte_count;
 		return SUCCESS;
 	}
-		
+
 #endif
 	return FAIL; //invalid parameter or not support
 }
@@ -3480,7 +3480,7 @@ int rtk_fc_mgr_sw_flow_mib_clear(int flowTblIdx)
 	{
 		memset(&fc_mgr_db.sw_flow_mib[flowTblIdx], 0, sizeof(fc_mgr_db.sw_flow_mib[flowTblIdx]));
 		return SUCCESS;
-	}		
+	}
 #endif
 	return FAIL; //invalid parameter or not support
 }
@@ -3508,7 +3508,7 @@ void *rtk_fc_mgr_proc_fops_kmalloc(void)
 {
 	void *pProc_fops = NULL;
 	unsigned int allocSize = rtk_fc_mgr_proc_fops_size();
-	
+
 	pProc_fops = kmalloc(allocSize, GFP_ATOMIC);
 	if (pProc_fops) {
 		memset(pProc_fops, 0, allocSize);
@@ -3611,7 +3611,7 @@ void *rtk_fc_mgr_timer_list_kmalloc(void)
 	timerList = kmalloc(sizeof(rtk_fc_timer_list_t), GFP_ATOMIC);
 	if(timerList)
 		memset(timerList, 0, sizeof(rtk_fc_timer_list_t));
-	
+
 	return timerList;
 }
 
@@ -3643,14 +3643,14 @@ int rtk_fc_mgr_skipHwlookUp_stat_clear(void)
 #if defined(CONFIG_FC_RTL9607C_SERIES)
 static void rtk_fc_mgr_pon_ds_p7_loopback(bool enable)
 {
-	
+
 	if(enable){
-		
+
 		(void)rtk_cpu_trapInsertTagByPort_set(RTK_FC_MAC_PORT_SLAVECPU, DISABLED);
 		(void)rtk_port_macLocalLoopbackEnable_set(RTK_FC_MAC_PORT_SLAVECPU, ENABLED);
 		(void)rtk_l2_illegalPortMoveAction_set(RTK_FC_MAC_PORT_SLAVECPU, ACTION_FORWARD);
 	}else{
-	
+
 		(void)rtk_cpu_trapInsertTagByPort_set(RTK_FC_MAC_PORT_SLAVECPU, ENABLED);
 		(void)rtk_port_macLocalLoopbackEnable_set(RTK_FC_MAC_PORT_SLAVECPU, DISABLED);
 		(void)rtk_l2_illegalPortMoveAction_set(RTK_FC_MAC_PORT_SLAVECPU, ACTION_FORWARD);
@@ -3661,7 +3661,7 @@ static void rtk_fc_mgr_pon_ds_p7_loopback(bool enable)
 int rtk_fc_mgr_glb_config_set(rtk_fc_mgr_config_type_t glbConfig, void *config)
 {
 	int ret = SUCCESS;
-	
+
 	switch(glbConfig){
 		case FC_MGR_GLB_CONFIG_WIFI_RX_HASH:
 			fc_mgr_db.wifi_rx_hash_en = (*(uint32 *)config) & 0x1;
@@ -3719,7 +3719,7 @@ int rtk_fc_mgr_check_config_setting(rtk_fc_mgr_config_type_t type)
 			ret = TRUE;
 #else
 			ret = FALSE;
-#endif			
+#endif
 			break;
 		case FC_MGR_GET_CONFIG_HWNAT_CUSTOMIZE:
 #if defined(HWNAT_CUSTOMIZE)
@@ -4040,6 +4040,6 @@ int rtk_fc_skb_set_pkt_priority(struct sk_buff *skb,uint32 priority)
 {
 
 	skb->priority = priority;
-	
+
 	return SUCCESS;
 }

@@ -7,6 +7,8 @@
 
 
 #include <generated/autoconf.h>
+#include <linux/mutex.h>
+#include <linux/rcupdate.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/compiler.h>
@@ -68,7 +70,7 @@
 #include <rtk/switch.h>
 #include <rtk/acl.h>
 #include <rtk/trap.h>
-#include <rtk/gponv2.h> 
+#include <rtk/gponv2.h>
 #include <rtk/epon.h>
 #include <common/type.h>
 #include <rtk/intr.h>
@@ -176,9 +178,9 @@ static unsigned int	SWITCH_MODE	= RTL8686_Switch_Mode_Normal;
 #define CP_REGS_SIZE		(0xff + 1)
 
 #define DESC_ALIGN		0x100
-#define UNCACHE_MASK		0xa0000000	
+#define UNCACHE_MASK		0xa0000000
 #define UNCACHE_ADDR(x)  	(((u32)x)|UNCACHE_MASK)
-/*add 1 desc for dummy desc : we will allocate one more desc even if the RING_SIZE is 0, 
+/*add 1 desc for dummy desc : we will allocate one more desc even if the RING_SIZE is 0,
 this can let the ring which we disable has a dummy desc in its FDP, RD says our NIC need this...*/
 #define RE8670_RXRING_BYTES(RING_SIZE)	( (sizeof(struct dma_rx_desc) * (RING_SIZE+1)) + DESC_ALIGN)
 #define RE8670_TXRING_BYTES(RING_SIZE)	( (sizeof(struct dma_tx_desc) * (RING_SIZE+1)) + DESC_ALIGN)
@@ -220,11 +222,11 @@ static inline int idx_hw2sw(int ring_num) {
 #define RLE0787_CLR_BIT32(idx, reg, bits)		(RLE0787_W32(idx, reg, (RLE0787_R32(idx, reg) & ~(bits))))
 
 #define TX_HQBUFFS_AVAIL(CP,ring_num)					\
-		(((CP)->tx_Mhqtail[ring_num] - (CP)->tx_Mhqhead[ring_num] + (CP)->re8670_tx_ring_size[ring_num] - 1)&((CP)->re8670_tx_ring_size[ring_num] - 1))		
+		(((CP)->tx_Mhqtail[ring_num] - (CP)->tx_Mhqhead[ring_num] + (CP)->re8670_tx_ring_size[ring_num] - 1)&((CP)->re8670_tx_ring_size[ring_num] - 1))
 
 #define RX_HQBUFFS_EMPTY(CP,ring_num)					\
 		(!ring_num ? ((CP)->rx_Mtail[ring_num] == RLE0787_R16((CP)->gmac, RxCDO)) : ((CP)->rx_Mtail[ring_num] == RLE0787_R16((CP)->gmac, RxCDO2+(ADDR_OFFSET*(ring_num-1)))))
-		
+
 #ifdef RX_MRING_INT_SPLIT/*plz add into both define and not define area*/
 #define en_rx_mring_int_split(idx) RLE0787_W32(idx, CONFIG_REG, (RLE0787_R32(idx, CONFIG_REG) | En_int_split))
 #define set_rring_route(idx) {RLE0787_W32(idx, RRING_ROUTING1, 0x65432111);RLE0787_W32(idx, RRING_ROUTING2, 0x65432111);RLE0787_W32(idx, RRING_ROUTING3, 0x65432111);RLE0787_W32(idx, RRING_ROUTING4, 0x65432111);RLE0787_W32(idx, RRING_ROUTING5, 0x65432111);RLE0787_W32(idx, RRING_ROUTING6, 0x65432111);RLE0787_W32(idx, RRING_ROUTING7, 0x65432111);}
@@ -257,7 +259,7 @@ static inline int idx_hw2sw(int ring_num) {
 #define assigne_cpisr_status(x, y)
 #define assigne_cpisr1_status(x, y)
 #define gather_rx_isr(x, y)
-#define CLEAR_ISR1(idx, x) 
+#define CLEAR_ISR1(idx, x)
 #define MASK_IMR0_RXALL(idx)
 #define UNMASK_IMR0_RXALL(idx)
 #endif
@@ -308,21 +310,21 @@ uint32 hwnat_customized_check_tx_done = 1;
 static char re8686_customized_rx_and_tx_used[MAX_GMAC_NUM] = { 0, 0, 0 };
 #endif
 //RX
-static customized_rxHook_t re8686_rx_ring_customized_func[MAX_GMAC_NUM][MAX_RXRING_NUM][CUSTOMIZE_TYPE_MAX-1] = 
+static customized_rxHook_t re8686_rx_ring_customized_func[MAX_GMAC_NUM][MAX_RXRING_NUM][CUSTOMIZE_TYPE_MAX-1] =
 {
 	{{NULL}, {NULL}, {NULL}, {NULL}, {NULL}, {NULL}},
 	{{NULL}, {NULL}, {NULL}, {NULL}, {NULL}, {NULL}},
 	{{NULL}, {NULL}, {NULL}, {NULL}, {NULL}, {NULL}}
 };
 
-static char re8686_rx_ring_customized_preLen[MAX_GMAC_NUM][MAX_RXRING_NUM] = 
+static char re8686_rx_ring_customized_preLen[MAX_GMAC_NUM][MAX_RXRING_NUM] =
 {
 	{0, 0, 0, 0, 0, 0},
 	{0, 0, 0, 0, 0, 0},
 	{0, 0, 0, 0, 0, 0},
 };
 
-static unsigned int re8686_rx_ring_customized_tx_ringNum[MAX_GMAC_NUM][MAX_RXRING_NUM] = 
+static unsigned int re8686_rx_ring_customized_tx_ringNum[MAX_GMAC_NUM][MAX_RXRING_NUM] =
 {
 	{0, 0, 0, 0, 0, 0},
 	{0, 0, 0, 0, 0, 0},
@@ -335,21 +337,21 @@ typedef struct re8686_customized_tx_descAddr_s
 	volatile DMA_TX_DESC *ls_descAddr;
 }re8686_customized_tx_descAddr_t;
 
-static volatile re8686_customized_tx_descAddr_t* re8686_rx_descIdx_customized_tx_descAddr[MAX_GMAC_NUM][MAX_RXRING_NUM] = 
+static volatile re8686_customized_tx_descAddr_t* re8686_rx_descIdx_customized_tx_descAddr[MAX_GMAC_NUM][MAX_RXRING_NUM] =
 {
 	{NULL, NULL, NULL, NULL, NULL, NULL},
 	{NULL, NULL, NULL, NULL, NULL, NULL},
 	{NULL, NULL, NULL, NULL, NULL, NULL}
 };
 
-static unsigned char* re8686_rx_ring_data_buffer[MAX_GMAC_NUM][MAX_RXRING_NUM] = 
+static unsigned char* re8686_rx_ring_data_buffer[MAX_GMAC_NUM][MAX_RXRING_NUM] =
 {
 	{NULL, NULL, NULL, NULL, NULL, NULL},
 	{NULL, NULL, NULL, NULL, NULL, NULL},
 	{NULL, NULL, NULL, NULL, NULL, NULL}
 };
 
-static unsigned char re8686_rx_ring_fc_state[MAX_GMAC_NUM][MAX_RXRING_NUM] = 
+static unsigned char re8686_rx_ring_fc_state[MAX_GMAC_NUM][MAX_RXRING_NUM] =
 {
 	{ON, ON, ON, ON, ON, ON},
 	{ON, ON, ON, ON, ON, ON},
@@ -359,54 +361,54 @@ static unsigned char re8686_rx_ring_fc_state[MAX_GMAC_NUM][MAX_RXRING_NUM] =
 static int re8686_rx_ring_previousDesc[MAX_GMAC_NUM][MAX_RXRING_NUM][CHECK_TX_OWN_BIT_INTERVAL_NUM];
 
 
-static unsigned int re8686_rx_ring_ext_pmsk[MAX_GMAC_NUM][MAX_RXRING_NUM][CUSTOMIZE_TYPE_MAX-1] = 
+static unsigned int re8686_rx_ring_ext_pmsk[MAX_GMAC_NUM][MAX_RXRING_NUM][CUSTOMIZE_TYPE_MAX-1] =
 {
 	{{0}, {0}, {0}, {0}, {0}, {0}},
 	{{0}, {0}, {0}, {0}, {0}, {0}},
 	{{0}, {0}, {0}, {0}, {0}, {0}}
 };
 //TX
-static unsigned int re8686_tx_ring_customized[MAX_GMAC_NUM][MAX_TXRING_NUM] = 
+static unsigned int re8686_tx_ring_customized[MAX_GMAC_NUM][MAX_TXRING_NUM] =
 {
 	{0, 0, 0, 0, 0},
 	{0, 0, 0, 0, 0},
 	{0, 0, 0, 0, 0}
 };
 
-static unsigned char* re8686_tx_ring_hdr_buffer[MAX_GMAC_NUM][MAX_RXRING_NUM] = 
+static unsigned char* re8686_tx_ring_hdr_buffer[MAX_GMAC_NUM][MAX_RXRING_NUM] =
 {
 	{NULL, NULL, NULL, NULL, NULL, NULL},
 	{NULL, NULL, NULL, NULL, NULL, NULL},
 	{NULL, NULL, NULL, NULL, NULL, NULL}
 };
 
-static unsigned char* re8686_tx_ring_hdr_buffer_sram_aligned[MAX_GMAC_NUM][MAX_RXRING_NUM] = 
+static unsigned char* re8686_tx_ring_hdr_buffer_sram_aligned[MAX_GMAC_NUM][MAX_RXRING_NUM] =
 {
 	{NULL, NULL, NULL, NULL, NULL, NULL},
 	{NULL, NULL, NULL, NULL, NULL, NULL},
 	{NULL, NULL, NULL, NULL, NULL, NULL}
 };
 
-static customized_txHook_t re8686_tx_ring_customized_func[MAX_GMAC_NUM][MAX_TXRING_NUM] = 
+static customized_txHook_t re8686_tx_ring_customized_func[MAX_GMAC_NUM][MAX_TXRING_NUM] =
 {
 	{NULL, NULL, NULL, NULL, NULL},
 	{NULL, NULL, NULL, NULL, NULL},
 	{NULL, NULL, NULL, NULL, NULL}
 };
 
-static char re8686_tx_ring_addr_offset[MAX_GMAC_NUM][MAX_RXRING_NUM][CUSTOMIZE_TYPE_MAX-1] = 
+static char re8686_tx_ring_addr_offset[MAX_GMAC_NUM][MAX_RXRING_NUM][CUSTOMIZE_TYPE_MAX-1] =
 {
 	{{0}, {0}, {0}, {0}, {0}, {0}},
 	{{0}, {0}, {0}, {0}, {0}, {0}},
 	{{0}, {0}, {0}, {0}, {0}, {0}}
 };
 
-static struct tx_info re8686_tx_ring_txInfo[MAX_GMAC_NUM][MAX_RXRING_NUM][CUSTOMIZE_TYPE_MAX-1] = 
+static struct tx_info re8686_tx_ring_txInfo[MAX_GMAC_NUM][MAX_RXRING_NUM][CUSTOMIZE_TYPE_MAX-1] =
 {
 	{{{0}},{{0}},{{0}},{{0}},{{0}},{{0}}},
 	{{{0}},{{0}},{{0}},{{0}},{{0}},{{0}}},
 	{{{0}},{{0}},{{0}},{{0}},{{0}},{{0}}}
-};	
+};
 #endif
 #endif
 
@@ -442,7 +444,7 @@ void memDump(void *start, u32 size, char *strHeader, char format)
 		printk(KERN_CONT "%s", strHeader);
 	column = size % 16;
 	row = (size / 16) + 1;
-	for (index = 0; index < row; index++, line += 16) 
+	for (index = 0; index < row; index++, line += 16)
 	{
 		buf = line;
 
@@ -455,7 +457,7 @@ void memDump(void *start, u32 size, char *strHeader, char format)
 			printk(KERN_CONT "\n%08x ", (u32) line);
 		else
 			printk(KERN_CONT "\n ");
-		
+
 		//Hex
 		if(format & RTL8686_MEM_DUMP_FORMAT_HEX)
 		{
@@ -526,25 +528,25 @@ void rxinfo_debug(struct re_private *cp, struct rx_info *pRxInfo, int ring_num)
 			pRxInfo->opts1.bit.ipv4csf,
 			pRxInfo->opts1.bit.l4csf,
 			pRxInfo->opts1.bit.rcdf,
-			pRxInfo->opts1.bit.ipfrag,			
+			pRxInfo->opts1.bit.ipfrag,
 			pRxInfo->opts1.bit.pppoetag,
 			pRxInfo->opts1.bit.rwt,
 			pRxInfo->opts1.bit.data_length
 		);
 		printk(KERN_CONT "addr\t= 0x%08x\n", pRxInfo->addr);
 		printk(KERN_CONT "opts2\t= 0x%08x CpuTag=%d PTPCpuTagEst=%d SVLAN_Est=%d Reason=%d CtagVa=%d CvlanTag=%d\n", pRxInfo->opts2.dw,
-			pRxInfo->opts2.bit.cputag,	
+			pRxInfo->opts2.bit.cputag,
 			pRxInfo->opts2.bit.ptp_in_cpu_tag_exist,
 			pRxInfo->opts2.bit.svlan_tag_exist,
 			pRxInfo->opts2.bit.reason,
 			pRxInfo->opts2.bit.ctagva,
 			pRxInfo->opts2.bit.cvlan_tag
-		);		
+		);
 		printk(KERN_CONT "opts3\t= 0x%08x IntPri=%d PONSID_or_EXTSPA=%d L3Rout=%d ORG=%d SrcPortNum=%d FBI=%d FBHSH_or_DstPortmsk=0x%x\n", pRxInfo->opts3.dw,
-			pRxInfo->opts3.bit.internal_priority,	
-			pRxInfo->opts3.bit.pon_sid_or_extspa,	
-			pRxInfo->opts3.bit.l3routing,	
-			pRxInfo->opts3.bit.origformat,	
+			pRxInfo->opts3.bit.internal_priority,
+			pRxInfo->opts3.bit.pon_sid_or_extspa,
+			pRxInfo->opts3.bit.l3routing,
+			pRxInfo->opts3.bit.origformat,
 			pRxInfo->opts3.bit.src_port_num,
 			pRxInfo->opts3.bit.fbi,
 			pRxInfo->opts3.bit.fb_hash_or_dst_portmsk
@@ -570,7 +572,7 @@ void txinfo_debug(struct re_private *cp, struct tx_info *pTxInfo)
 		);
 		printk(KERN_CONT "addr\t= 0x%08x \n", pTxInfo->addr);
 		printk(KERN_CONT "opts2\t= 0x%08x CPUTag=%d SVLANAct=%d CVLANAct=%d TxPmsk=0x%x CVLAN_VID=%d CVLAN_Pri=%d\n", pTxInfo->opts2.dw,
-			pTxInfo->opts2.bit.cputag,			
+			pTxInfo->opts2.bit.cputag,
 			pTxInfo->opts2.bit.tx_svlan_action,
 			pTxInfo->opts2.bit.tx_cvlan_action,
 			pTxInfo->opts2.bit.tx_portmask,
@@ -594,7 +596,7 @@ void txinfo_debug(struct re_private *cp, struct tx_info *pTxInfo)
 			pTxInfo->opts4.bit.lgmtu,
 			pTxInfo->opts4.bit.svlan_vidh<<8|pTxInfo->opts4.bit.svlan_vidl,
 			pTxInfo->opts4.bit.svlan_prio
-		);	
+		);
 	}
 }
 
@@ -702,7 +704,7 @@ do { \
 #define RX_WARN(gmac, enable, times, comment, arg...)
 #define TX_WARN(gmac, enable, times, comment, arg...)
 #define ETHDBG_PRINT(gmac, enable, times, flag, fmt, args...)
-#define SKB_DBG(args...) 
+#define SKB_DBG(args...)
 #define RXINFO_DBG(CP, args...)
 #define TXINFO_DBG(CP, args...)
 #define RXDBG_TIMES_UPDATE(CP)
@@ -724,7 +726,7 @@ static int dev_num=0;
 #define DEVPRIV(dev)  ((struct re_dev_private*)netdev_priv(dev))
 #define VTAG2DESC(d) (((((d) & 0x00ff)<<8) | (((d) & 0xff00)>>8)) & 0x0000ffff)
 /*warning! +1 for smux.................................................*/
-#define VTAG2VLANTCI(v) (( (((v) & 0xff00)>>8) | (((v) & 0x00ff)<<8) ) + 1) 
+#define VTAG2VLANTCI(v) (( (((v) & 0xff00)>>8) | (((v) & 0x00ff)<<8) ) + 1)
 
 static void __re8670_set_rx_mode(unsigned int gmac);
 static void re8670_tx(struct re_private *cp, int ring_num, int from_hw);
@@ -737,7 +739,7 @@ int re8670_reset(void);
 
 /*================================================
 			GMAC used Global Variable
-================================================*/ 
+================================================*/
 
 #if defined(CONFIG_RTL865X_ETH_PRIV_SKB)
 extern int eth_skb_free_num;
@@ -747,7 +749,7 @@ extern int critical_eth_skb_free_num;
 extern int dynamic_alloc_skb_num;
 #endif
 
-static struct rtl8686_dev_table_entry rtl8686_dev_table[] = {	
+static struct rtl8686_dev_table_entry rtl8686_dev_table[] = {
 	//ifname, ifflag, vid, phyPort, dev_instant
 	{"eth0",		RTL8686_ELAN, 0, CPU_PORT0, 0, NULL}, // root dev eth0 must be first
 	{"eth0.2",		RTL8686_ELAN, 0, LAN_PORT1, 1, NULL},
@@ -766,7 +768,7 @@ static struct rtl8686_dev_table_entry rtl8686_dev_table[] = {
 #endif
 	{"nas0",			RTL8686_WAN, 0, WAN_PORT, 0, NULL},
 #if defined(CONFIG_RTL_MULTI_PHY_ETH_WAN)
-	{"ifprobe",		RTL8686_WAN, 0, LAN_PORT6, 0, NULL}, 
+	{"ifprobe",		RTL8686_WAN, 0, LAN_PORT6, 0, NULL},
 #endif
 };
 
@@ -804,7 +806,7 @@ static void gmacintr_notifier_link_change(intrBcasterMsg_t	*pMsgData)
 				netif_carrier_on(LCDev_mapping[pMsgData->intrBitMask].phy_dev);
 				LCDev_mapping[pMsgData->intrBitMask].status = (u8)1;
 			}
-			else if (pMsgData->intrSubType == 2U && netif_carrier_ok(LCDev_mapping[pMsgData->intrBitMask].phy_dev)) //Link Down 
+			else if (pMsgData->intrSubType == 2U && netif_carrier_ok(LCDev_mapping[pMsgData->intrBitMask].phy_dev)) //Link Down
 			{
 				netif_carrier_off(LCDev_mapping[pMsgData->intrBitMask].phy_dev);
 				LCDev_mapping[pMsgData->intrBitMask].status = (u8)0;
@@ -813,7 +815,7 @@ static void gmacintr_notifier_link_change(intrBcasterMsg_t	*pMsgData)
 		}
 	}
 }
-// Handle Link Change Interrupt for Netlink 
+// Handle Link Change Interrupt for Netlink
 static intrBcasterNotifier_t GMAClinkChangeNotifier = {
     .notifyType = MSG_TYPE_LINK_CHANGE,
     .notifierCb = gmacintr_notifier_link_change,
@@ -841,7 +843,7 @@ static void gmacintr_notifier_ethwan_link_change(intrBcasterMsg_t	*pMsgData)
 				netif_carrier_on(LCDev_mapping[pMsgData->intrBitMask].phy_dev);
 				LCDev_mapping[pMsgData->intrBitMask].status = 1;
 			}
-			else if (pMsgData->intrSubType == 2U && netif_carrier_ok(LCDev_mapping[pMsgData->intrBitMask].phy_dev)) //Link Down 
+			else if (pMsgData->intrSubType == 2U && netif_carrier_ok(LCDev_mapping[pMsgData->intrBitMask].phy_dev)) //Link Down
 			{
 				netif_carrier_off(LCDev_mapping[pMsgData->intrBitMask].phy_dev);
 				LCDev_mapping[pMsgData->intrBitMask].status = 0;
@@ -850,7 +852,7 @@ static void gmacintr_notifier_ethwan_link_change(intrBcasterMsg_t	*pMsgData)
 		}
 	}
 }
-// Handle Link Change Interrupt for Netlink 
+// Handle Link Change Interrupt for Netlink
 static intrBcasterNotifier_t GMACethwanStateChangeNotifier = {
     .notifyType = MSG_TYPE_LINK_CHANGE,
     .notifierCb = gmacintr_notifier_ethwan_link_change,
@@ -937,15 +939,15 @@ static int re8670_set_mac_addr(struct net_device *dev, void *addr_p)
     	return -EADDRNOTAVAIL;
 
 	eth_hw_addr_set(dev, addr->sa_data);
-	
+
 	for(gmac=0 ; gmac<MAX_GMAC_NUM ; gmac++)
 	{
 		cp = root_cp->re_private_data_ptr[gmac];
-		
+
 		if(cp->gmac_enabled != GMAC_TRUE)
 			continue;
-	
-		RLE0787_W32(cp->gmac, IDR0 , (dev->dev_addr[0] << 24) | (dev->dev_addr[1] << 16) | 
+
+		RLE0787_W32(cp->gmac, IDR0 , (dev->dev_addr[0] << 24) | (dev->dev_addr[1] << 16) |
 				(dev->dev_addr[2] << 8) | (dev->dev_addr[3] << 0));
 		RLE0787_W32(cp->gmac, IDR4 , (dev->dev_addr[4] << 24) | (dev->dev_addr[5] << 16));
 	}
@@ -984,7 +986,7 @@ static int config_tx_jumbo(u32 gmac, u8 enabled)
 static int re8670_set_mtu(struct net_device *dev, int new_mtu)
 {
 	//printk(KERN_CONT "%s-%d: dev=%s new_mtu=%d\n", __func__, __LINE__, dev->name, new_mtu);
-	
+
 	if (new_mtu < 68 || new_mtu > RE8686_ETH_DATA_LEN)
 	{
 		return -EINVAL;
@@ -998,7 +1000,7 @@ static int re8670_init_mtu(void)
 {
 	unsigned int totalDev = TOTAL_RTL8686_DEV_NUM;
 	int i;
-	
+
 	for(i=0;i<totalDev;i++)
 	{
 		re8670_set_mtu(rtl8686_dev_table[i].dev_instant, CP_LS_MTU);
@@ -1175,7 +1177,7 @@ static inline void clear_tx_tdu_int(unsigned int gmac, unsigned int tx_ring_bitm
 static inline void clear_isr(struct re_private *cp, u32 status)
 {
 	unsigned int gmac = cp->gmac;
-	
+
 	RLE0787_W16(gmac, ISR, (u16)status);
 #ifdef RX_MRING_INT_SPLIT
 	CLEAR_ISR1(gmac, (cp->isr1_status&~(cp->rx_multiring_bitmap)));
@@ -1199,7 +1201,7 @@ static int check_memory_avaliable(int size)
 	unsigned long free_pages, limit_pages;
 	//printk(KERN_CONT "===> totalram %lu, freeram %lu, totalhigh %lu, freehigh %lu\n",
 	//		val.totalram, val.freeram, val.totalhigh, val.freehigh);
-	limit_pages = (min_free_kbytes > min_limit_pages) ? min_free_kbytes : min_limit_pages; 
+	limit_pages = (min_free_kbytes > min_limit_pages) ? min_free_kbytes : min_limit_pages;
 	limit_pages += (size/512);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 	free_pages = global_zone_page_state(NR_FREE_PAGES);
@@ -1210,7 +1212,7 @@ static int check_memory_avaliable(int size)
 	free_pages = free_pages - nr_free_highpages();
 #endif
 	free_pages = K(free_pages);
-	
+
 	if (free_pages > limit_pages) {
 		if (mem_usage_status == 1) {
 			mem_usage_status = 0;
@@ -1229,11 +1231,11 @@ static int check_memory_avaliable(int size)
 
 __IRAM_NIC
 struct sk_buff *re8670_getAlloc(unsigned int size)
-{	
+{
 	struct re_private_root *root_cp = &re_private_data_root;
 	struct sk_buff *skb=NULL;
 	unsigned long free_page;
-	
+
 #if defined(CONFIG_RTL865X_ETH_PRIV_SKB) || defined(CONFIG_RTL_ETH_RECYCLED_SKB)
 #if defined(CONFIG_RTL_ETH_RECYCLED_SKB)
 	skb = dev_alloc_skb_recy_eth(size, root_cp->recycle_skb_pool_id);
@@ -1303,10 +1305,10 @@ struct sk_buff *re8670_getAlloc(unsigned int size)
 
 __IRAM_NIC
 struct sk_buff *re8670_getMcAlloc(unsigned int size)
-{	
+{
 	return re8670_getAlloc(size);
 }
-	
+
 __IRAM_NIC
 struct sk_buff *re8670_getBcAlloc(unsigned int size)
 		{
@@ -1334,7 +1336,7 @@ struct sk_buff *re8670_getCriticalAlloc(unsigned int size)
 static inline void rtk_gmac_set_rxbufsize (struct re_private_root *root_cp)
 {
 	unsigned int mtu = root_cp->dev->mtu;
-	struct re_private *cp;	
+	struct re_private *cp;
 	unsigned int gmac;
 
 	for(gmac=0 ; gmac<MAX_GMAC_NUM ; gmac++)
@@ -1343,7 +1345,7 @@ static inline void rtk_gmac_set_rxbufsize (struct re_private_root *root_cp)
 
 		if(cp->gmac_enabled != GMAC_TRUE)
 			continue;
-	
+
 		if (mtu > ETH_DATA_LEN)
 			/* MTU + ethernet header + FCS + optional VLAN tag */
 			cp->rx_buf_sz = mtu + ETH_HLEN + 8;
@@ -1353,20 +1355,44 @@ static inline void rtk_gmac_set_rxbufsize (struct re_private_root *root_cp)
 }
 
 
-int re8686_register_txfunc(tfunc_t pfunc){
-	struct re_private_root *root_cp = &re_private_data_root;
+static DEFINE_MUTEX(re8686_tx_hook_mutex);
 
-	root_cp->txfunc = pfunc;
-	
-	return 0;
+int re8686_register_txfunc(tfunc_t pfunc)
+{
+    struct re_private_root *root_cp = &re_private_data_root;
+
+    mutex_lock(&re8686_tx_hook_mutex);
+    WRITE_ONCE(root_cp->txfunc, pfunc);
+    mutex_unlock(&re8686_tx_hook_mutex);
+
+    return 0;
 }
 
+int re8686_unregister_txfunc(tfunc_t pfunc)
+{
+    struct re_private_root *root_cp = &re_private_data_root;
+
+    mutex_lock(&re8686_tx_hook_mutex);
+
+    if (READ_ONCE(root_cp->txfunc) != pfunc) {
+        mutex_unlock(&re8686_tx_hook_mutex);
+        return -ENOENT;
+    }
+
+    WRITE_ONCE(root_cp->txfunc, NULL);
+
+    synchronize_rcu();
+
+    mutex_unlock(&re8686_tx_hook_mutex);
+
+    return 0;
+}
 atomic_t lock_tx_tail = ATOMIC_INIT(0);
 
 int re8686_register_rxfunc_by_port(unsigned int gmac, unsigned int port, p2rfunc_t pfunc)
 {
 	struct re_private_root *root_cp = &re_private_data_root;
-	struct re_private *cp = root_cp->re_private_data_ptr[gmac];	
+	struct re_private *cp = root_cp->re_private_data_ptr[gmac];
 
 	if(port >= SW_PORT_NUM || !pfunc)
 		return -EINVAL;
@@ -1379,7 +1405,7 @@ int re8686_register_rxfunc_all_port(p2rfunc_t pfunc)
 	unsigned int gmac;
 	unsigned int i;
 	int ret;
-	
+
 	if(!pfunc)
 		return -EINVAL;
 
@@ -1414,8 +1440,8 @@ static inline void _tx_additional_setting(struct sk_buff *skb, struct net_device
 	if(pTxInfo->opts2.bit.tx_portmask == 0){
 		pTxInfo->opts2.bit.tx_portmask = DEVPRIV(dev)->txPortMask;
 	}
-	
-	//luke:20130411, patch for protocol stack broadcast hardware lookup packet to LAN will fail 
+
+	//luke:20130411, patch for protocol stack broadcast hardware lookup packet to LAN will fail
 	//this patch should be remove when fwdEngine Tx module is ready.
 	if((pTxInfo->opts2.bit.tx_portmask == 0) && ((skb->data[0]&1)==1))
 	{
@@ -1445,7 +1471,7 @@ static inline void _tx_additional_setting(struct sk_buff *skb, struct net_device
 	//tysu patch for 0371
 	pTxInfo->opts2.bit.tx_portmask=0;
 #endif
-	
+
 	//20130724: If NIC TX send by HWLOOKUP, L34 Keep will cause un-except problem.
 	if(pTxInfo->opts2.bit.tx_portmask!=0) pTxInfo->opts3.bit.l34_keep = 1;	//ensure switch won't modify or filter packet
 	//20141104LUKE: when L34Keep is on, Keep is also needed for gpon.
@@ -1461,7 +1487,7 @@ static inline void _tx_additional_setting(struct sk_buff *skb, struct net_device
 	{
 		u16 off=12;
 		u32 xlen=0;
-	
+
 		if((*(u16*)(skb->data+off))==htons(0x8100))//CTAG
 	        off+=4;
 		if(((*(u16*)(skb->data+off))==htons(0x8863))||((*(u16*)(skb->data+off))==htons(0x8864)))//PPPoE
@@ -1472,11 +1498,11 @@ static inline void _tx_additional_setting(struct sk_buff *skb, struct net_device
 			if(xlen<=60)
 				pTxInfo->opts1.bit.data_length=xlen;
 		}
-			
+
 	}
 }
 
-static 
+static
 __IRAM_NIC
 void	tx_additional_setting(struct sk_buff *skb, struct net_device *dev, struct tx_info *pTxInfo)
 {
@@ -1508,7 +1534,7 @@ static
 #endif
 struct net_device* decideRxDevice(struct re_private *cp, struct rx_info *pRxInfo)
 {
-	unsigned int num = (pRxInfo->opts3.bit.src_port_num >= SW_PORT_NUM) ? 
+	unsigned int num = (pRxInfo->opts3.bit.src_port_num >= SW_PORT_NUM) ?
 		(0) : pRxInfo->opts3.bit.src_port_num ;
 
 	return cp->port2dev[num];
@@ -1563,16 +1589,16 @@ int re8670_rx_skb(struct re_private *cp, struct sk_buff *skb, struct rx_info *pR
 
 	/* switch_port is patched for iptables and ebtables rule matching */
 	//skb->switch_port = NULL;
-#if 0 //remove it, it will influence FC to assign GPON SID to mark 
+#if 0 //remove it, it will influence FC to assign GPON SID to mark
 	skb->mark = (skb->vlan_tci & 0xFFF);
 #endif
 	//printk(KERN_CONT "%s %d switch_port: %s vlan_tci=0x%x mark=0x%x\n",
 	//		__func__, __LINE__, skb->switch_port, skb->vlan_tci, skb->mark);
 
 	skb->protocol = eth_type_trans (skb, skb->dev);
-	
+
 	//do we need any wan dev rx hacking here?(before pass to netif_rx)
-	
+
 	updateRxStatic(cp, skb);
 	SKB_DBG(skb, cp->debug_enable, cp->debug_times, RTL8686_SKB_RX);
 #ifdef RX_NAPI_MODE
@@ -1629,12 +1655,12 @@ static void re8670_rx_software (struct re_private *cp, struct sk_buff *skb, stru
 		skb->priority = pRxInfo->opts3.bit.internal_priority;
 		RX_TRACE(gmac, cp->debug_enable, cp->debug_times, "priority=%d\n", skb->priority);
 	}
-#ifdef CONFIG_RTL_ETH_RECYCLED_SKB	
-	else	
+#ifdef CONFIG_RTL_ETH_RECYCLED_SKB
+	else
 		skb->priority = 0;
 #endif
 #endif
-#if defined(CONFIG_RTL_ETH_RECYCLED_SKB) && (defined(CONFIG_RTL8192CD) || defined(LOCAL_SERVICE_ACCELERATE))	
+#if defined(CONFIG_RTL_ETH_RECYCLED_SKB) && (defined(CONFIG_RTL8192CD) || defined(LOCAL_SERVICE_ACCELERATE))
 	//clear cb[0] & cb[1] here, for skip fc
 	*(unsigned int *)(skb->cb)=0x0;
 #endif
@@ -1656,7 +1682,7 @@ static void re8670_rx_software (struct re_private *cp, struct sk_buff *skb, stru
 }
 
 
-static 
+static
 __IRAM_NIC
 unsigned int re8670_rx_csum_ok (struct rx_info *rxInfo)
 {
@@ -1697,14 +1723,14 @@ static inline void retriveRxInfo(DMA_RX_DESC *desc, struct rx_info *pRxInfo){
 static inline void updateGmacFlowControl(unsigned int gmac,unsigned rx_tail,int ring_num)
 {
 	struct re_private_root *root_cp = &re_private_data_root;
-	struct re_private *cp = root_cp->re_private_data_ptr[gmac];	
-	unsigned int new_cpu_desc_num;		
+	struct re_private *cp = root_cp->re_private_data_ptr[gmac];
+	unsigned int new_cpu_desc_num;
 
 	if(cp->re8670_rx_flow_control_status[ring_num] != GMAC_TRUE)
 		return;
-	
+
 	if(ring_num==0)
-	{    
+	{
 		new_cpu_desc_num = RLE0787_R32(gmac, EthrntRxCPU_Des_Num);
 		new_cpu_desc_num &= 0x00FFFF0F; // clear
 		new_cpu_desc_num |= (((rx_tail&0xFF)<<24)|(((rx_tail>>8)&0xF)<<4)); // update
@@ -1736,8 +1762,8 @@ void vlan_detag(unsigned int gmac, int onoff){
 void SetTxRingPrioInRR(unsigned int gmac)
 {
 	struct re_private_root *root_cp = &re_private_data_root;
-	struct re_private *cp = root_cp->re_private_data_ptr[gmac];	
-	
+	struct re_private *cp = root_cp->re_private_data_ptr[gmac];
+
 	cp->iocmd1_reg |= TX_RR_scheduler;
 	RLE0787_W32(gmac, IO_CMD1, cp->iocmd1_reg);
 }
@@ -1745,8 +1771,8 @@ void SetTxRingPrioInRR(unsigned int gmac)
 static inline unsigned char getRxRingBitMap(struct re_private *cp)
 {
 	unsigned char result = (unsigned char)((cp->isr1_status)|(RX_RDU_CHECK(cp->isr_status))|((cp->isr_status&SW_INT)?cp->rx_multiring_bitmap:0));
-		
-	cp->isr_status=0;	
+
+	cp->isr_status=0;
 	cp->isr1_status=0;
 	return result;
 }
@@ -1774,16 +1800,16 @@ static void setSoftwareInterrupt(struct timer_list *t)
 
 	qlen = skb_queue_len(&sd->input_pkt_queue);
 #endif
-	//linux input queue is empty and skb is enough=>trigger NIC to receive packet 
+	//linux input queue is empty and skb is enough=>trigger NIC to receive packet
 	if (
 #ifdef CONFIG_RTL865X_ETH_PRIV_SKB
 		(eth_skb_alloc_num < RE8670_MAX_ALLOC_RXSKB_NUM)
 #else
 		GMAC_TRUE
 #endif
-#if defined (CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE)		
+#if defined (CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE)
 		&&(qlen <= net_hotdata.max_backlog)
-#endif		
+#endif
 		)
 	{
 		//Gmac 0
@@ -1792,15 +1818,15 @@ static void setSoftwareInterrupt(struct timer_list *t)
 		//Gmac 1
 		if(re_private_data_root.rx_pause_by_software_bitmap & (1<<1))
 			RLE0787_W32(1, SWINT_REG, 1<<24);
-	}	
+	}
 	else
 	{
 		mod_timer(&re_private_data_root.rx_pause_by_software_interrupt_timer, jiffies+1);
 	}
-#if defined (CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE)		
+#if defined (CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE)
 	spin_unlock(&sd->input_pkt_queue.lock);
 	local_irq_restore(flag);
-#endif	
+#endif
 	return ;
 }
 #endif
@@ -1812,7 +1838,7 @@ static void setSoftwareInterrupt(struct timer_list *t)
  */
 static int re8670_ff_enter(struct re_private *cp, struct sk_buff *skb, struct rx_info *pRxInfo)
 {
-	extern void reinit_skbhdr(struct sk_buff *skb, 
+	extern void reinit_skbhdr(struct sk_buff *skb,
 						void (*prealloc_cb)(struct sk_buff *, unsigned));
 	extern int rteFastForwarding(struct sk_buff *skb);
 
@@ -1820,10 +1846,10 @@ static int re8670_ff_enter(struct re_private *cp, struct sk_buff *skb, struct rx
 	if ( !ether_addr_equal(skb->data, skb->dev->dev_addr))
 	{
 		int dir=DIR_LAN;
-		
+
 		if (skb->dev->rtk_priv_flags & RTK_IFF_DOMAIN_WAN) // wan
 			dir = DIR_WAN;
-		
+
 		if (brgFastForwarding((struct sk_buff *)skb, dir))
 		{
 			return 1;
@@ -1832,10 +1858,10 @@ static int re8670_ff_enter(struct re_private *cp, struct sk_buff *skb, struct rx
 
 	skb_reset_mac_header(skb);
 	skb->protocol = ((unsigned short *)(skb->data))[6];
-		
+
 	skb_pull(skb, ETH_HLEN);
 	skb->dst = NULL;
-	
+
 	if (NET_RX_SUCCESS == rteFastForwarding(skb))
 	{
 		return 1;
@@ -1843,7 +1869,7 @@ static int re8670_ff_enter(struct re_private *cp, struct sk_buff *skb, struct rx
 	skb_push(skb, ETH_HLEN);
 
 	reinit_skbhdr(skb, rtl865x_free_eth_priv_buf);
-	
+
 	return 0;
 }
 #endif //end of CONFIG_RTL865X_ETH_PRIV_SKB_ADV
@@ -1855,8 +1881,8 @@ extern int ( *check_voip_channel_loading )( void );
 
 /*
 	we can use this map to decide what sequence we want, that means, queue's priority.
-	also, we can use this to decrease some iterations when we split rx interrupt. 
-	if u only open rx ring1 and ring6, u can set pri_map = {0,5,1,2,3,4}, and 
+	also, we can use this to decrease some iterations when we split rx interrupt.
+	if u only open rx ring1 and ring6, u can set pri_map = {0,5,1,2,3,4}, and
 	rx_ring_bitmap_current will only has these two bits as well, so we don't need to run "for"
 	6 times.
 	*/
@@ -1907,23 +1933,23 @@ static void re8670_rx(struct re_private *cp)
 	static unsigned char rx_ring_backup = 0;
 	unsigned char rx_ring_bitmap_current;
 	int i = 0, max_rx_ring_num;
-#endif	
-#ifdef HWNAT_CUSTOMIZE	
-		u32 len;	
-		struct sk_buff *skb, *new_skb;	
-#ifdef CONFIG_RG_JUMBO_FRAME	
-		struct sk_buff *orig_skb;	
-#endif	
-		DMA_RX_DESC *desc;	
-		unsigned buflen;	
-		struct rx_info rxInfo;	
-		int rx_previousTail;	
-		unsigned customized_buflen=cp->rx_buf_sz;	
-		//u32 customized_opts1,customized_opts2,customized_opts3;	
-		u32 customized_opts1, customized_opts3;	
+#endif
+#ifdef HWNAT_CUSTOMIZE
+		u32 len;
+		struct sk_buff *skb, *new_skb;
+#ifdef CONFIG_RG_JUMBO_FRAME
+		struct sk_buff *orig_skb;
+#endif
+		DMA_RX_DESC *desc;
+		unsigned buflen;
+		struct rx_info rxInfo;
+		int rx_previousTail;
+		unsigned customized_buflen=cp->rx_buf_sz;
+		//u32 customized_opts1,customized_opts2,customized_opts3;
+		u32 customized_opts1, customized_opts3;
 #endif
 	u32 skb_buf_size = 0;
-	
+
 	GMAC_SPIN_LOCK(&cp->rx_lock);
 
 	//protect eth rx while reboot
@@ -1938,9 +1964,9 @@ static void re8670_rx(struct re_private *cp)
 		return;
 #endif
 	}
-	
+
 #ifdef RX_MRING_INT_SPLIT
-	rx_ring_bitmap_current=getRxRingBitMap(cp);	
+	rx_ring_bitmap_current=getRxRingBitMap(cp);
 	rx_ring_bitmap_current|=rx_ring_backup;
 	rx_ring_backup=0;
 	max_rx_ring_num = cp->rx_not_only_ring1?MAX_RXRING_NUM:1;
@@ -1956,13 +1982,13 @@ static void re8670_rx(struct re_private *cp)
 				CLEAR_ISR1(gmac, (1<<ring_num));
 			}
 		}
-#endif		
-		rx_Mtail = cp->rx_Mtail[ring_num];	
+#endif
+		rx_Mtail = cp->rx_Mtail[ring_num];
 		rx_ring_size = cp->re8670_rx_ring_size[ring_num];
 
-#if defined(HWNAT_CUSTOMIZE) && defined(CONFIG_RTL9607C_SERIES)	
+#if defined(HWNAT_CUSTOMIZE) && defined(CONFIG_RTL9607C_SERIES)
 		if(dynamic_sram_desc !=0)
-			rx_work = 4096;	
+			rx_work = 4096;
 		else
 #endif
 		{
@@ -1974,7 +2000,7 @@ static void re8670_rx(struct re_private *cp)
 #endif
 
 		while (rx_work--)
-		{	
+		{
 #ifndef HWNAT_CUSTOMIZE
 			u32 len;
 			struct sk_buff *skb, *new_skb;
@@ -1983,140 +2009,140 @@ static void re8670_rx(struct re_private *cp)
 #endif
 			DMA_RX_DESC *desc;
 			unsigned buflen;
-			struct rx_info rxInfo;	
-#else	
-			if(re8686_rx_ring_data_buffer[gmac][ring_num]){	
-				customized_opts1 = cp->rx_Mring[ring_num][rx_Mtail].opts1;	
-				//customized_opts2 = cp->rx_Mring[ring_num][rx_Mtail].opts2;	
-					
-				//retriveRxInfo(&cp->rx_Mring[ring_num][rx_Mtail], &rxInfo);	
-				//RXINFO_DBG(gmac, &rxInfo, ring_num);if(debug_enable[gmac]&RTL8686_SKB_RX)memDump(cp->rx_Mring[ring_num][rx_Mtail].addr,80,"rx packet");	
-				
-				if (unlikely(customized_opts1&DescOwn))	
-				{					
-					cp->cp_stats.rx_customized_rx_owned++;	
-					break;	
-				}	
-				len = (customized_opts1 & 0x0fff) - 4;		//minus CRC 4 bytes	
-				/*if (unlikely(customized_opts1&RCDF)){		//DMA error	
-					cp->cp_stats.rcdf++;	
-					goto BYPASS_TX;	
-				}	
-				if (unlikely(customized_opts1&CRCErr)){ 	//CRC error	
-					cp->cp_stats.crcerr++;	
-					goto BYPASS_TX;	
-				}	
-				if (unlikely((customized_opts1 & (FirstFrag | LastFrag)) != (FirstFrag | LastFrag))){	
-					cp->cp_stats.frag++;	
-					goto BYPASS_TX;	
-				}	
-				if ((customized_opts2&CPU_REASON_FWD)||(customized_opts2&CPU_REASON_ACL_TRAP))*/	
-				{	
-					if(dynamic_sram_desc>0){	
-						//do the tx function	
-			
-						len+=re8686_rx_ring_customized_preLen[gmac][ring_num];	
-							
-						if(re8686_tx_ring_hdr_buffer[gmac][ring_num])	
-							re8686_customized_dualTx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num]);	
-						else	
-							re8686_customized_quickTx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num]);	
-					}else{	
-#if 1 //Wen: For sync VXLAN/NPTv6 fastforward issue, sync from luna_pro_cmcc_cu: [JIM][revision 39486]fix lock wait problem for nic acc data path.	
-						if(re8686_customized_rx_and_tx_used[gmac])	
-						{	
-							// Forcibly break if re8686_customized_rx_and_tx is used	
-							rx_work = 0;	
-						}	
-#endif	
-						desc = &cp->rx_Mring[ring_num][rx_Mtail];	
-						customized_opts3 = *((unsigned int *)(desc)+3);	
-						//check type by extport mask	
-						if(customized_opts3&re8686_rx_ring_ext_pmsk[gmac][ring_num][0]){	
-								
-							//call rx hook func, if have	
-							if(re8686_rx_ring_customized_func[gmac][ring_num][0])	
-								len=(re8686_rx_ring_customized_func[gmac][ring_num][0])(cp, (struct rx_info *)desc, len);	
-								
-							re8686_customized_tx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num], &re8686_tx_ring_txInfo[gmac][ring_num][0], re8686_tx_ring_addr_offset[gmac][ring_num][0]);	
-						}else if(customized_opts3&re8686_rx_ring_ext_pmsk[gmac][ring_num][1]){	
-							//call rx hook func, if have	
-								
-							if(re8686_rx_ring_customized_func[gmac][ring_num][1])	
-								len=(re8686_rx_ring_customized_func[gmac][ring_num][1])(cp, (struct rx_info *)desc, len);	
-								
-							re8686_customized_tx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num], &re8686_tx_ring_txInfo[gmac][ring_num][1], re8686_tx_ring_addr_offset[gmac][ring_num][1]);	
-						}else if(customized_opts3&re8686_rx_ring_ext_pmsk[gmac][ring_num][2]){	
-							//call rx hook func, if have	
-								
-							if(re8686_rx_ring_customized_func[gmac][ring_num][2])	
-								len=(re8686_rx_ring_customized_func[gmac][ring_num][2])(cp, (struct rx_info *)desc, len);		
-								
-							re8686_customized_tx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num], &re8686_tx_ring_txInfo[gmac][ring_num][2], re8686_tx_ring_addr_offset[gmac][ring_num][2]);	
-						}else{	
-							//call rx hook func, if have	
-								
-							if(re8686_rx_ring_customized_func[gmac][ring_num][3])	
-								len=(re8686_rx_ring_customized_func[gmac][ring_num][3])(cp, (struct rx_info *)desc, len);	
-								
-							re8686_customized_tx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num], &re8686_tx_ring_txInfo[gmac][ring_num][3], re8686_tx_ring_addr_offset[gmac][ring_num][3]);	
-						}	
-							
-					}	
-BYPASS_TX:	
-					rx_previousTail=re8686_rx_ring_previousDesc[gmac][ring_num][rx_Mtail%CHECK_TX_OWN_BIT_INTERVAL_NUM];	
-					if(likely(rx_previousTail>=0))	
-					{	
-						if(hwnat_customized_check_tx_done && re8686_rx_descIdx_customized_tx_descAddr[gmac][ring_num] && re8686_rx_descIdx_customized_tx_descAddr[gmac][ring_num][rx_previousTail].fs_descAddr)	
-						{	
-							while(unlikely(re8686_rx_descIdx_customized_tx_descAddr[gmac][ring_num][rx_previousTail].fs_descAddr->opts1&DescOwn))	
-							{	
-								cp->cp_stats.rx_customized_tx_own_waiting_times++;	
-							}	
-						}	
-						if(!dynamic_sram_desc) //DRAM mode	
-							cp->tx_Mhqring[re8686_rx_ring_customized_tx_ringNum[gmac][ring_num]][rx_previousTail].addr=(u32)(re8686_rx_ring_data_buffer[gmac][ring_num]+rx_previousTail*cp->rx_buff_size) | UNCACHE_MASK;	
-						cp->rx_Mring[ring_num][rx_previousTail].opts1 = (DescOwn | customized_buflen) | ((rx_previousTail == (rx_ring_size - 1))?RingEnd:0);	
-					}	
-					re8686_rx_ring_previousDesc[gmac][ring_num][rx_Mtail%CHECK_TX_OWN_BIT_INTERVAL_NUM]=rx_Mtail;	
-					cp->cp_stats.rx_customized_forward++;	
-					rx_Mtail = NEXT_RX(rx_Mtail, rx_ring_size);	
-					continue;	
-				}	
-				//copy to original skb 	
-				//memcpy(cp->rx_skb[ring_num][rx_Mtail].skb->data+(customized_opts1 & FirstFrag?RX_OFFSET:0), cp->rx_Mring[ring_num][rx_Mtail].addr, customized_opts1 & 0x0fff);	
-				//cp->cp_stats.rx_customized_copied++;	
-			}	
-#endif	
-#if 1 // Wen: For sync VXLAN/NPTv6 fastforward issue, sync from luna_pro_cmcc_cu: [LUKE][revision 39160]: fix normal path do not kick watchdog problem.	
-			loop_wdt++;	
-			if (unlikely(loop_wdt > 1024 )) {	
-#ifdef CONFIG_LUNA_WDT_KTHREAD	
-				extern void luna_watchdog_kick(void);	
-				luna_watchdog_kick();	
-				loop_wdt = 0;	
-#endif	
-			}	
-			if (unlikely(time_is_before_jiffies(expiry))) {	
+			struct rx_info rxInfo;
+#else
+			if(re8686_rx_ring_data_buffer[gmac][ring_num]){
+				customized_opts1 = cp->rx_Mring[ring_num][rx_Mtail].opts1;
+				//customized_opts2 = cp->rx_Mring[ring_num][rx_Mtail].opts2;
+
+				//retriveRxInfo(&cp->rx_Mring[ring_num][rx_Mtail], &rxInfo);
+				//RXINFO_DBG(gmac, &rxInfo, ring_num);if(debug_enable[gmac]&RTL8686_SKB_RX)memDump(cp->rx_Mring[ring_num][rx_Mtail].addr,80,"rx packet");
+
+				if (unlikely(customized_opts1&DescOwn))
+				{
+					cp->cp_stats.rx_customized_rx_owned++;
+					break;
+				}
+				len = (customized_opts1 & 0x0fff) - 4;		//minus CRC 4 bytes
+				/*if (unlikely(customized_opts1&RCDF)){		//DMA error
+					cp->cp_stats.rcdf++;
+					goto BYPASS_TX;
+				}
+				if (unlikely(customized_opts1&CRCErr)){ 	//CRC error
+					cp->cp_stats.crcerr++;
+					goto BYPASS_TX;
+				}
+				if (unlikely((customized_opts1 & (FirstFrag | LastFrag)) != (FirstFrag | LastFrag))){
+					cp->cp_stats.frag++;
+					goto BYPASS_TX;
+				}
+				if ((customized_opts2&CPU_REASON_FWD)||(customized_opts2&CPU_REASON_ACL_TRAP))*/
+				{
+					if(dynamic_sram_desc>0){
+						//do the tx function
+
+						len+=re8686_rx_ring_customized_preLen[gmac][ring_num];
+
+						if(re8686_tx_ring_hdr_buffer[gmac][ring_num])
+							re8686_customized_dualTx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num]);
+						else
+							re8686_customized_quickTx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num]);
+					}else{
+#if 1 //Wen: For sync VXLAN/NPTv6 fastforward issue, sync from luna_pro_cmcc_cu: [JIM][revision 39486]fix lock wait problem for nic acc data path.
+						if(re8686_customized_rx_and_tx_used[gmac])
+						{
+							// Forcibly break if re8686_customized_rx_and_tx is used
+							rx_work = 0;
+						}
+#endif
+						desc = &cp->rx_Mring[ring_num][rx_Mtail];
+						customized_opts3 = *((unsigned int *)(desc)+3);
+						//check type by extport mask
+						if(customized_opts3&re8686_rx_ring_ext_pmsk[gmac][ring_num][0]){
+
+							//call rx hook func, if have
+							if(re8686_rx_ring_customized_func[gmac][ring_num][0])
+								len=(re8686_rx_ring_customized_func[gmac][ring_num][0])(cp, (struct rx_info *)desc, len);
+
+							re8686_customized_tx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num], &re8686_tx_ring_txInfo[gmac][ring_num][0], re8686_tx_ring_addr_offset[gmac][ring_num][0]);
+						}else if(customized_opts3&re8686_rx_ring_ext_pmsk[gmac][ring_num][1]){
+							//call rx hook func, if have
+
+							if(re8686_rx_ring_customized_func[gmac][ring_num][1])
+								len=(re8686_rx_ring_customized_func[gmac][ring_num][1])(cp, (struct rx_info *)desc, len);
+
+							re8686_customized_tx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num], &re8686_tx_ring_txInfo[gmac][ring_num][1], re8686_tx_ring_addr_offset[gmac][ring_num][1]);
+						}else if(customized_opts3&re8686_rx_ring_ext_pmsk[gmac][ring_num][2]){
+							//call rx hook func, if have
+
+							if(re8686_rx_ring_customized_func[gmac][ring_num][2])
+								len=(re8686_rx_ring_customized_func[gmac][ring_num][2])(cp, (struct rx_info *)desc, len);
+
+							re8686_customized_tx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num], &re8686_tx_ring_txInfo[gmac][ring_num][2], re8686_tx_ring_addr_offset[gmac][ring_num][2]);
+						}else{
+							//call rx hook func, if have
+
+							if(re8686_rx_ring_customized_func[gmac][ring_num][3])
+								len=(re8686_rx_ring_customized_func[gmac][ring_num][3])(cp, (struct rx_info *)desc, len);
+
+							re8686_customized_tx(cp, len, re8686_rx_ring_customized_tx_ringNum[gmac][ring_num], &re8686_tx_ring_txInfo[gmac][ring_num][3], re8686_tx_ring_addr_offset[gmac][ring_num][3]);
+						}
+
+					}
+BYPASS_TX:
+					rx_previousTail=re8686_rx_ring_previousDesc[gmac][ring_num][rx_Mtail%CHECK_TX_OWN_BIT_INTERVAL_NUM];
+					if(likely(rx_previousTail>=0))
+					{
+						if(hwnat_customized_check_tx_done && re8686_rx_descIdx_customized_tx_descAddr[gmac][ring_num] && re8686_rx_descIdx_customized_tx_descAddr[gmac][ring_num][rx_previousTail].fs_descAddr)
+						{
+							while(unlikely(re8686_rx_descIdx_customized_tx_descAddr[gmac][ring_num][rx_previousTail].fs_descAddr->opts1&DescOwn))
+							{
+								cp->cp_stats.rx_customized_tx_own_waiting_times++;
+							}
+						}
+						if(!dynamic_sram_desc) //DRAM mode
+							cp->tx_Mhqring[re8686_rx_ring_customized_tx_ringNum[gmac][ring_num]][rx_previousTail].addr=(u32)(re8686_rx_ring_data_buffer[gmac][ring_num]+rx_previousTail*cp->rx_buff_size) | UNCACHE_MASK;
+						cp->rx_Mring[ring_num][rx_previousTail].opts1 = (DescOwn | customized_buflen) | ((rx_previousTail == (rx_ring_size - 1))?RingEnd:0);
+					}
+					re8686_rx_ring_previousDesc[gmac][ring_num][rx_Mtail%CHECK_TX_OWN_BIT_INTERVAL_NUM]=rx_Mtail;
+					cp->cp_stats.rx_customized_forward++;
+					rx_Mtail = NEXT_RX(rx_Mtail, rx_ring_size);
+					continue;
+				}
+				//copy to original skb
+				//memcpy(cp->rx_skb[ring_num][rx_Mtail].skb->data+(customized_opts1 & FirstFrag?RX_OFFSET:0), cp->rx_Mring[ring_num][rx_Mtail].addr, customized_opts1 & 0x0fff);
+				//cp->cp_stats.rx_customized_copied++;
+			}
+#endif
+#if 1 // Wen: For sync VXLAN/NPTv6 fastforward issue, sync from luna_pro_cmcc_cu: [LUKE][revision 39160]: fix normal path do not kick watchdog problem.
+			loop_wdt++;
+			if (unlikely(loop_wdt > 1024 )) {
+#ifdef CONFIG_LUNA_WDT_KTHREAD
+				extern void luna_watchdog_kick(void);
+				luna_watchdog_kick();
+				loop_wdt = 0;
+#endif
+			}
+			if (unlikely(time_is_before_jiffies(expiry))) {
 				printk_once(KERN_CONT "nic-rx: rx time exceed %lu/%lu\n",expiry, jiffies);
-				break;	
-			}	
+				break;
+			}
 #endif
 #ifdef CONFIG_RTL8686_SWITCH
 			if(re_private_data_root.rx_pause_by_software_enable)
 			{
-#if defined (CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE)			
+#if defined (CONFIG_RTK_L34_FLEETCONNTRACK_ENABLE)
 				struct softnet_data *sd;
 				unsigned long flag;
 				unsigned int qlen;
 				//The packet will be dropped by Linux PS when it is sent to PS and PS input queue is full, so pause receiving packet to SW.
-			
+
 				sd = &per_cpu(softnet_data, smp_processor_id());
 				local_irq_save(flag);
 				spin_lock(&sd->input_pkt_queue.lock);
 
 				qlen = skb_queue_len(&sd->input_pkt_queue);
-				
+
 				if (qlen > net_hotdata.max_backlog)
 				{
 					cp->pauseBySwRingBitmap |= (1<<ring_num);
@@ -2129,7 +2155,7 @@ BYPASS_TX:
 				}
 				spin_unlock(&sd->input_pkt_queue.lock);
 				local_irq_restore(flag);
-#endif			
+#endif
 				cp->pauseBySwRingBitmap &= ~(1<<ring_num);
 				re_private_data_root.rx_pause_by_software_bitmap &= ~(1<<gmac);
 			}
@@ -2137,7 +2163,7 @@ BYPASS_TX:
 #if defined(CONFIG_RTK_VOIP_QOS)
 			if( (pkt_rcv_cnt++ > 100 || (jiffies - start_time) >= 1)&& check_voip_channel_loading && check_voip_channel_loading() > 0)
 			{
-				break; 
+				break;
 			}
 #endif
 
@@ -2151,8 +2177,8 @@ BYPASS_TX:
 					break;
 				}
 			}
-#endif 
-			desc = &cp->rx_Mring[ring_num][rx_Mtail];	
+#endif
+			desc = &cp->rx_Mring[ring_num][rx_Mtail];
 			retriveRxInfo(desc, &rxInfo);
 
 			if (rxInfo.opts1.bit.own)
@@ -2168,14 +2194,14 @@ BYPASS_TX:
             	BUG();
 
 			RXINFO_DBG(cp, &rxInfo, ring_num);
-			
+
 			len = rxInfo.opts1.bit.data_length & 0x0fff;		//minus CRC 4 bytes later
-	
+
 			if (unlikely(rxInfo.opts1.bit.rcdf)){		//DMA error
 #ifdef CONFIG_RG_JUMBO_FRAME
 				if(cp->jumboLength>0)		//flush jumbo skb
 				{
-					if(cp->jumboFrame) 
+					if(cp->jumboFrame)
 						dev_kfree_skb_any(cp->jumboFrame);
 					cp->jumboLength=0;
 					cp->jumboFrame=NULL;
@@ -2188,7 +2214,7 @@ BYPASS_TX:
 #ifdef CONFIG_RG_JUMBO_FRAME
 				if(cp->jumboLength>0)		//flush jumbo skb
 				{
-					if(cp->jumboFrame) 
+					if(cp->jumboFrame)
 						dev_kfree_skb_any(cp->jumboFrame);
 					cp->jumboLength=0;
 					cp->jumboFrame=NULL;
@@ -2197,7 +2223,7 @@ BYPASS_TX:
 				cp->cp_stats.crcerr++;
 				goto rx_next;
 			}
-			
+
 			skb_buf_size = SKB_BUF_SIZE;
 
 			buflen = cp->rx_buf_sz + RX_OFFSET;
@@ -2210,7 +2236,7 @@ BYPASS_TX:
 					goto rx_to_software;
 				}
 				else //FS=1, LS=0
-				{				
+				{
 					orig_skb=skb;
 					//printk(KERN_CONT "FS=1, LS=0, first frag skb is %d\n",len);
 					//memDump(skb->data+RX_OFFSET,64,"skb_start_64", RTL8686_MEM_DUMP_FORMAT_ALL);
@@ -2218,12 +2244,12 @@ BYPASS_TX:
 
 					if(cp->jumboLength>0)		//flush jumbo skb
 					{
-						if(cp->jumboFrame) 
+						if(cp->jumboFrame)
 							dev_kfree_skb_any(cp->jumboFrame);
 						cp->jumboLength=0;
 						cp->jumboFrame=NULL;
 					}
-					
+
 					//Init global variables, copy the skb into jumboFrame and free the frag one
 					cp->jumboFrame = dev_alloc_skb(JUMBO_SKB_BUF_SIZE);
 					if (unlikely(!cp->jumboFrame)) {
@@ -2234,7 +2260,7 @@ BYPASS_TX:
 						goto rx_next;
 					}
 					cp->jumboLength=len;
-					
+
 					//Copy skb into jumboFrame
 					memcpy(cp->jumboFrame->data+RX_OFFSET,skb->data+RX_OFFSET,len);
 					dma_cache_wback_inv((unsigned long)skb->data,(u32)(skb->end-skb->data));
@@ -2254,7 +2280,7 @@ BYPASS_TX:
 				{
 					if(unlikely(cp->jumboLength+len>=JUMBO_SKB_BUF_SIZE))
 					{
-						if(cp->jumboFrame) 
+						if(cp->jumboFrame)
 							dev_kfree_skb_any(cp->jumboFrame);
 						cp->jumboLength=0;
 						cp->jumboFrame=NULL;
@@ -2263,19 +2289,19 @@ BYPASS_TX:
 					}
 					else
 					{
-						//Copy into jumboFrame, free the skb						
+						//Copy into jumboFrame, free the skb
 						memcpy(cp->jumboFrame->data+RX_OFFSET+cp->jumboLength,skb->data,len);
 						dma_cache_wback_inv((unsigned long)skb->data,(u32)(skb->end-skb->data));
 						cp->jumboLength+=len;
-						
+
 						if(rxInfo.opts1.bit.ls==1)		//FS=0, LS=1
 						{
 							//printk("FS=0, LS=1, last frag skb is %d\n",len);
 							//memDump(skb->data,64,"skb_start_64", RTL8686_MEM_DUMP_FORMAT_ALL);
 							//memDump(skb->data+len-16,16,"skb_last_16", RTL8686_MEM_DUMP_FORMAT_ALL);
-							//dev_kfree_skb_any(skb);							
+							//dev_kfree_skb_any(skb);
 							skb=cp->jumboFrame;
-							len=cp->jumboLength;							
+							len=cp->jumboLength;
 							rxInfo.opts1.bit.data_length=cp->jumboLength & 0x3fff;		//at most 14 bits
 							cp->jumboLength=0;
 							cp->jumboFrame=NULL;
@@ -2286,7 +2312,7 @@ BYPASS_TX:
 						{
 							//printk(KERN_CONT "FS=0, LS=0 frag skb is %d\n",len);
 							//memDump(skb->data,64,"skb_start_64", RTL8686_MEM_DUMP_FORMAT_ALL);
-							//memDump(skb->data+len-16,16,"skb_last_16", RTL8686_MEM_DUMP_FORMAT_ALL);							
+							//memDump(skb->data+len-16,16,"skb_last_16", RTL8686_MEM_DUMP_FORMAT_ALL);
 						}
 					}
 				}
@@ -2305,8 +2331,8 @@ rx_to_software:
 			if(orig_skb == NULL)
 #endif
 			{
-				if(rxInfo.opts3.bit.internal_priority == GMAC_PRIORITY_CRITICAL || 
-					(ring_num == MAX_RXRING_NUM-1)) 
+				if(rxInfo.opts3.bit.internal_priority == GMAC_PRIORITY_CRITICAL ||
+					(ring_num == MAX_RXRING_NUM-1))
 				{
 					cp->cp_stats.rx_critical_num++;
 					new_skb=re8670_getCriticalAlloc(skb_buf_size);
@@ -2329,7 +2355,7 @@ rx_to_software:
 					//The packet will be dropped when run out of skb, so pause receiving packet to SW.
 #ifdef CONFIG_RTL8686_SWITCH
 					if(re_private_data_root.rx_pause_by_software_enable)
-					{		
+					{
 						cp->pauseBySwRingBitmap |= (1<<ring_num);
 						re_private_data_root.rx_pause_by_software_bitmap |= (1<<gmac);
 						if(!timer_pending(&re_private_data_root.rx_pause_by_software_interrupt_timer))
@@ -2363,24 +2389,24 @@ rx_to_software:
 			{
 				skb_reserve(skb, RX_OFFSET); // HW DMA start at 4N+2 only in FS.
 			}
-			len-=4;	//minus CRC 4 bytes here			
+			len-=4;	//minus CRC 4 bytes here
 			skb->len=0;
 			skb_put(skb, len);
-			
+
 			SKB_DBG(skb, cp->debug_enable, cp->debug_times, RTL8686_SKB_RX);
 			RX_TRACE(gmac, cp->debug_enable, cp->debug_times, "SKB[%x] DA=%02x:%02x:%02x:%02x:%02x:%02x SA=%02x:%02x:%02x:%02x:%02x:%02x ethtype=%04x len=%d\n",(u32)skb&0xffff
 			,skb->data[0],skb->data[1],skb->data[2],skb->data[3],skb->data[4],skb->data[5]
-			,skb->data[6],skb->data[7],skb->data[8],skb->data[9],skb->data[10],skb->data[11]			
+			,skb->data[6],skb->data[7],skb->data[8],skb->data[9],skb->data[10],skb->data[11]
 			,(skb->data[12]<<8)|skb->data[13],len);
-#ifdef HWNAT_CUSTOMIZE	
-			if(re8686_rx_ring_data_buffer[gmac][ring_num]==NULL)	
+#ifdef HWNAT_CUSTOMIZE
+			if(re8686_rx_ring_data_buffer[gmac][ring_num]==NULL)
 #endif
 
 			if(new_skb)
 			{
 				cp->rx_Mring[ring_num][rx_Mtail].addr = CPHYSADDR(new_skb->data);
 				cp->rx_skb[ring_num][rx_Mtail].skb = new_skb;
-				
+
 				dma_cache_inv((unsigned long)new_skb->data,(u32)new_skb->end-(u32)new_skb->data);
 				//dma_cache_inv((unsigned long)skb->data,skb->len);
 			}
@@ -2433,7 +2459,7 @@ rx_next:
 #ifndef RX_NAPI_MODE
 	unmask_rx_int(gmac);
 #endif
-	GMAC_SPIN_UNLOCK(&cp->rx_lock); 
+	GMAC_SPIN_UNLOCK(&cp->rx_lock);
 #ifdef RX_NAPI_MODE
 	return rx_packets_cnt;
 #endif
@@ -2461,7 +2487,7 @@ unsigned int re8670_rx_napi_gmac_index_get(struct napi_struct *napi)
 		cp = root_cp->re_private_data_ptr[i];
 		if(cp->gmac_enabled != GMAC_TRUE)
 			continue;
-		
+
 		if(&cp->napi == napi)
 			return i;
 	}
@@ -2470,20 +2496,20 @@ unsigned int re8670_rx_napi_gmac_index_get(struct napi_struct *napi)
 
 static int re8670_poll(struct napi_struct *napi, int budget)
 {
-	struct re_private_root *root_cp = &re_private_data_root;	
+	struct re_private_root *root_cp = &re_private_data_root;
 	struct re_private *cp;
 	unsigned int gmac;
 	int total_received_pkts = 0;
 	u16 status;
 
 	gmac = re8670_rx_napi_gmac_index_get(napi);
-	
+
 	cp = root_cp->re_private_data_ptr[gmac];
 	total_received_pkts = re8670_rx(cp);
 #ifdef RX_NAPI_MODE_DEBUG
 	napi_statistic[total_received_pkts]++;
 #endif
-	if(total_received_pkts < budget) 
+	if(total_received_pkts < budget)
 	{
 		napi_complete_done(napi, total_received_pkts);
 		/* do not diable interrupt if we got bad packet */
@@ -2511,13 +2537,13 @@ static irqreturn_t re8670_interrupt(int irq, void *re_private_ptr, struct pt_reg
 	struct re_private *cp = re_private_ptr;
 	unsigned int gmac = cp->gmac;
 	u32 status = read_isr_status(cp);
-	
-	if (!status)  
+
+	if (!status)
 	{
 		//printk(KERN_CONT "%s: no status indicated in interrupt, weird!\n", __func__);	//shlee 2.6
 		return IRQ_RETVAL(IRQ_NONE);
 	}
-	
+
 #ifdef TX_INTR_HANDLE
 	if(status & TX_ALL(gmac))
 	{
@@ -2609,7 +2635,7 @@ static irqreturn_t re8670_interrupt(int irq, void *re_private_ptr, struct pt_reg
 	}
 #endif
 
-	if (status & RX_ALL(gmac)) 
+	if (status & RX_ALL(gmac))
 	{
 		if(status & RER_RUNT)
 		{
@@ -2639,7 +2665,7 @@ static irqreturn_t re8670_interrupt(int irq, void *re_private_ptr, struct pt_reg
 #endif
 		}
 	}
-	
+
 	clear_isr(cp, status);
 
 	return IRQ_RETVAL(IRQ_HANDLED);
@@ -2665,7 +2691,7 @@ __IRAM_NIC void re8670_tx(struct re_private *cp, int ring_num, int from_hw)
 
 	if(unlikely(cp->eth_close == GMAC_TRUE))
 		return;
-	
+
 	while (!((status = (cp->tx_Mhqring[ring_num][tx_tail].opts1))& DescOwn)) {
 		if (tx_tail == cp->tx_Mhqhead[ring_num])
 			break;
@@ -2686,7 +2712,7 @@ __IRAM_NIC void re8670_tx(struct re_private *cp, int ring_num, int from_hw)
 			tx_tail = NEXT_TX(tx_tail,cp->re8670_tx_ring_size[ring_num]); //tysu: this skb is many frags skb, just free once.
 			skb = cp->tx_skb[ring_num][tx_tail].skb;
 			//printk(KERN_CONT "skb=%x tx_tail=%d\n",(u32)skb,tx_tail);
-			status = cp->tx_Mhqring[ring_num][tx_tail].opts1;			
+			status = cp->tx_Mhqring[ring_num][tx_tail].opts1;
 			if(status & DescOwn)
 			{
 				break;
@@ -2696,10 +2722,10 @@ __IRAM_NIC void re8670_tx(struct re_private *cp, int ring_num, int from_hw)
 		if(status & DescOwn) break;
 		if(skb==NULL) break;
 #else
-		if (unlikely(!skb))   
+		if (unlikely(!skb))
 			break;
 #endif
-		updateTxStatic(skb);	
+		updateTxStatic(skb);
 
 		dev_kfree_skb_any(skb);
 #if defined(TX_RECYCLE_SKB_USING_TOK_INT) || defined(TX_RECYCLE_SKB_USING_POLLING)
@@ -2707,8 +2733,8 @@ __IRAM_NIC void re8670_tx(struct re_private *cp, int ring_num, int from_hw)
 			cp->cp_stats.tok_free_skb[ring_num]++;
 		}
 #endif
-		cp->tx_skb[ring_num][tx_tail].skb = NULL;		
-		
+		cp->tx_skb[ring_num][tx_tail].skb = NULL;
+
 		tx_tail = NEXT_TX(tx_tail, cp->re8670_tx_ring_size[ring_num]);
 	}
 	cp->tx_Mhqtail[ring_num]=tx_tail;
@@ -3159,8 +3185,8 @@ __IRAM_NIC void re8670_tx_all(struct re_private *cp)
 	{
 		goto tx_all_exit;
 	}
-	
-	GMAC_SPIN_LOCK(&cp->tx_lock);	
+
+	GMAC_SPIN_LOCK(&cp->tx_lock);
 	for (i=0 ; i<MAX_TXRING_NUM ; i++) {
 		re8670_tx(cp, i, GMAC_TRUE);
 		kick_tx(cp->gmac, i);
@@ -3176,9 +3202,9 @@ tx_all_exit:
 __IRAM_NIC void checkTXDesc(int ring_num, unsigned int gmac)
 {
 #if !defined(TX_RECYCLE_SKB_USING_TOK_INT) && !defined(TX_RECYCLE_SKB_USING_POLLING)
-	struct re_private_root *root_cp = &re_private_data_root;	
+	struct re_private_root *root_cp = &re_private_data_root;
 	struct re_private *cp = root_cp->re_private_data_ptr[gmac];
-	
+
 	if (likely(!atomic_read(&lock_tx_tail)) && cp!=NULL) {
 		atomic_set(&lock_tx_tail, 1);
         re8670_tx(cp, ring_num, GMAC_FALSE);
@@ -3213,10 +3239,10 @@ void re8670_mFrag_xmit(struct sk_buff *skb, struct re_private *cp, unsigned *ent
 	if (__vlan_get_protocol(skb, skb->protocol, NULL) == htons(ETH_P_PPP_SES))
 		addi_l2_len += RE8670_PPPOE_HDR_SIZE;
 
-	if (likely((skb->len - skb->data_len) != (RE8670_HW_LSO_FS_TX_STUCK_LEN+addi_l2_len) 
+	if (likely((skb->len - skb->data_len) != (RE8670_HW_LSO_FS_TX_STUCK_LEN+addi_l2_len)
 		&& (skb->len - skb->data_len) != RE8670_HW_LSO_FS_TX_STUCK_LEN_1))
 	{
-#ifdef CONFIG_REALTEK_HW_LSO			
+#ifdef CONFIG_REALTEK_HW_LSO
 		cp->tx_skb[ring_num][*entry].skb = (struct sk_buff *)0xffffffff;
 #else
 		cp->tx_skb[ring_num][*entry].skb = skb;
@@ -3252,7 +3278,7 @@ void re8670_mFrag_xmit(struct sk_buff *skb, struct re_private *cp, unsigned *ent
 		first_txd->opts1.bit.crc = 1;
 		first_txd->opts1.bit.ipcs = 1;
 		first_len = (skb->len - skb->data_len);
-		first_txd->opts1.bit.data_length = first_len;	
+		first_txd->opts1.bit.data_length = first_len;
 		first_txd->opts1.bit.eor = (*entry == (cp->re8670_tx_ring_size[ring_num] - 1)) ? 1 : 0;
 		if(first_txd->opts2.bit.tx_portmask&CPU_PORT_MASK_ALL
 			&& !(first_txd->opts3.bit.tx_dst_stream_id & 0x7F))
@@ -3271,7 +3297,7 @@ void re8670_mFrag_xmit(struct sk_buff *skb, struct re_private *cp, unsigned *ent
 			dbg_txd->addr = &cp->rtl8686_tx_ring_debug[ring_num].dataBuffer[*entry];
 		}
 #endif
-		dma_cache_wback_inv(first_txd, sizeof(struct tx_info)); 
+		dma_cache_wback_inv(first_txd, sizeof(struct tx_info));
 
 		*entry = NEXT_TX(*entry, cp->re8670_tx_ring_size[ring_num]);
 		for (frag = 0; frag < skb_shinfo(skb)->nr_frags; frag++) {
@@ -3413,7 +3439,7 @@ void re8670_mFrag_xmit(struct sk_buff *skb, struct re_private *cp, unsigned *ent
 			//wmb();
 			//msg_queue_print("i=%x %x s=%x %x l=%d\n",*(u8*)(txd->addr+0x12),*(u8*)(txd->addr+0x13),*(u8*)(txd->addr+0x32),*(u8*)(txd->addr+0x33),len);
 
-#if defined(LINUX_SG_ENABLE) && defined(NIC_DESC_ACCELERATE_FOR_SG)			
+#if defined(LINUX_SG_ENABLE) && defined(NIC_DESC_ACCELERATE_FOR_SG)
 			cp->tx_skb[ring_num][*entry].mapping = (dma_addr_t)first_data_mapping;
 #else
 			cp->tx_skb[ring_num][*entry].mapping = (dma_addr_t)mapping;
@@ -3536,10 +3562,10 @@ void re8670_mFrag_xmit(struct sk_buff *skb, struct re_private *cp, unsigned *ent
 	if (__vlan_get_protocol(skb, skb->protocol, NULL) == htons(ETH_P_PPP_SES))
 		addi_l2_len += RE8670_PPPOE_HDR_SIZE;
 
-	if (likely((skb->len - skb->data_len) != (RE8670_HW_LSO_FS_TX_STUCK_LEN+addi_l2_len) 
+	if (likely((skb->len - skb->data_len) != (RE8670_HW_LSO_FS_TX_STUCK_LEN+addi_l2_len)
 		&& (skb->len - skb->data_len) != RE8670_HW_LSO_FS_TX_STUCK_LEN_1))
 	{
-#ifdef CONFIG_REALTEK_HW_LSO			
+#ifdef CONFIG_REALTEK_HW_LSO
 		cp->tx_skb[ring_num][*entry].skb = (struct sk_buff *)0xffffffff;
 #else
 		cp->tx_skb[ring_num][*entry].skb = skb;
@@ -3575,7 +3601,7 @@ void re8670_mFrag_xmit(struct sk_buff *skb, struct re_private *cp, unsigned *ent
 		first_txd->opts1.bit.crc = 1;
 		first_txd->opts1.bit.ipcs = 1;
 		first_len = (skb->len - skb->data_len);
-		first_txd->opts1.bit.data_length = first_len;	
+		first_txd->opts1.bit.data_length = first_len;
 		first_txd->opts1.bit.eor = (*entry == (cp->re8670_tx_ring_size[ring_num] - 1)) ? 1 : 0;
 		if(first_txd->opts2.bit.tx_portmask&CPU_PORT_MASK_ALL
 			&& !(first_txd->opts3.bit.tx_dst_stream_id & 0x7F))
@@ -3594,7 +3620,7 @@ void re8670_mFrag_xmit(struct sk_buff *skb, struct re_private *cp, unsigned *ent
 			dbg_txd->addr = &cp->rtl8686_tx_ring_debug[ring_num].dataBuffer[*entry];
 		}
 #endif
-		dma_cache_wback_inv(first_txd, sizeof(struct tx_info)); 
+		dma_cache_wback_inv(first_txd, sizeof(struct tx_info));
 
 		*entry = NEXT_TX(*entry, cp->re8670_tx_ring_size[ring_num]);
 		for (frag = 0; frag < skb_shinfo(skb)->nr_frags; frag++) {
@@ -3735,7 +3761,7 @@ void re8670_mFrag_xmit(struct sk_buff *skb, struct re_private *cp, unsigned *ent
 			//wmb();
 			//msg_queue_print("i=%x %x s=%x %x l=%d\n",*(u8*)(txd->addr+0x12),*(u8*)(txd->addr+0x13),*(u8*)(txd->addr+0x32),*(u8*)(txd->addr+0x33),len);
 
-#if defined(LINUX_SG_ENABLE) && defined(NIC_DESC_ACCELERATE_FOR_SG)			
+#if defined(LINUX_SG_ENABLE) && defined(NIC_DESC_ACCELERATE_FOR_SG)
 			cp->tx_skb[ring_num][*entry].mapping = (dma_addr_t)first_data_mapping;
 #else
 			cp->tx_skb[ring_num][*entry].mapping = (dma_addr_t)mapping;
@@ -3847,7 +3873,7 @@ static inline void kick_tx(unsigned int gmac, int ring_num)
 #endif
 
 	ring_num = idx_sw2hw(ring_num);
-	
+
 	switch(ring_num) {
 		case 0:
 		case 1:
@@ -3945,7 +3971,7 @@ __IRAM_NIC void _nic_burst_wq_func(burst_tx_info_t *pBurstInfo)
 	u32 eor;
 	DMA_TX_DESC  *txd;
 	unsigned int ring_counter=0;
-	
+
 	GMAC_SPIN_LOCK(&pBurstInfo->cp->tx_lock);
 
 	checkTXDesc(pBurstInfo->ringNum, pBurstInfo->cp->gmac);
@@ -3953,11 +3979,11 @@ __IRAM_NIC void _nic_burst_wq_func(burst_tx_info_t *pBurstInfo)
 	for(;ring_counter<pBurstInfo->cp->re8670_tx_ring_size[pBurstInfo->ringNum]-1;pBurstInfo->burst_index++,ring_counter++)
 	{
 		entry = pBurstInfo->cp->tx_Mhqhead[pBurstInfo->ringNum];
-		eor = (entry == (pBurstInfo->cp->re8670_tx_ring_size[pBurstInfo->ringNum] - 1)) ? RingEnd : 0;		
-		txd = &pBurstInfo->cp->tx_Mhqring[pBurstInfo->ringNum][entry];    
+		eor = (entry == (pBurstInfo->cp->re8670_tx_ring_size[pBurstInfo->ringNum] - 1)) ? RingEnd : 0;
+		txd = &pBurstInfo->cp->tx_Mhqring[pBurstInfo->ringNum][entry];
 
 		if(pBurstInfo->burst_delay!=0){
-			if(unlikely(pBurstInfo->burst_sentPacketCount==0)){				
+			if(unlikely(pBurstInfo->burst_sentPacketCount==0)){
 				REG32(0xb8003290)=0xffffffff;
 			}
 		}
@@ -3968,7 +3994,7 @@ __IRAM_NIC void _nic_burst_wq_func(burst_tx_info_t *pBurstInfo)
 			pBurstInfo->cp->tx_skb[pBurstInfo->ringNum][entry].skb = NULL;
 			break;				//stop since we finished
 		}
-		
+
 		//apply to txdesc
 		if(eor)
 			pBurstInfo->txInfo.opts1.dw |= eor;
@@ -3993,13 +4019,13 @@ __IRAM_NIC void _nic_burst_wq_func(burst_tx_info_t *pBurstInfo)
 				kick_tx(pBurstInfo->cp->gmac, pBurstInfo->ringNum);
 #ifdef CONFIG_RTK_PTOOL_LA_BY_GPIO
 				LA_GPIO_HIGH(LA_GPIO_AUX7);
-#endif				
+#endif
 				while(1){
 					if(REG32(0xb8003294)>=pBurstInfo->burst_delay) break;
 				}
 #ifdef CONFIG_RTK_PTOOL_LA_BY_GPIO
 				LA_GPIO_LOW(LA_GPIO_AUX7);
-#endif				
+#endif
 			}
 		}
 	}
@@ -4039,7 +4065,7 @@ int re8686_send_with_txInfo_and_mask_burst(char *pktdata,int len, struct tx_info
 	struct net_device *dev = ROOTDEV;
 	struct re_private_root *root_cp = DEV2CP(dev);
 	struct re_private *cp;
-	
+
 	//initialization
 	if(ptxInfo){
 		cp = re_private_data_root.re_private_data_ptr[ptxInfo->opts3.bit.gmac_id];
@@ -4078,17 +4104,17 @@ int re8686_send_with_txInfo_and_mask_burst(char *pktdata,int len, struct tx_info
 		GMAC_SPIN_UNLOCK(&pBurstInfo->cp->tx_lock);
 		return -1;
 	}
-	
+
 	GMAC_SPIN_UNLOCK(&pBurstInfo->cp->tx_lock);
 
 	pBurstInfo->burst_buffer=kmalloc(len,GFP_ATOMIC);
 	if(!pBurstInfo->burst_buffer){
 		printk(KERN_CONT "no mem for burst buffer..\n");
 		return -1;
-	}	
+	}
 
 	//timer/counter 8
-	REG32(0xb8003298)=0x11000014;  // count per 100ns	
+	REG32(0xb8003298)=0x11000014;  // count per 100ns
 	pBurstInfo->burst_sentPacketCount=0;
 	pBurstInfo->burst_number=burstNum;
 	pBurstInfo->burst_index=0;
@@ -4096,14 +4122,14 @@ int re8686_send_with_txInfo_and_mask_burst(char *pktdata,int len, struct tx_info
 	if(nicSendRate==100){
 		pBurstInfo->burst_delay=0;
 		//printk(KERN_CONT "nicSendRate=100%% delayPerBurst=0 ns\n");
-	}else{		
+	}else{
 		unsigned int sendPktPerSec;
 		sendPktPerSec=nicSendRate*(10000000>>3)/(len+24);		//24=ifg 20byte + crc 4byte
-		pBurstInfo->burst_packetNumberPerSecond=len>1518?1:110-((len*62+6280)/1000);	
+		pBurstInfo->burst_packetNumberPerSecond=len>1518?1:110-((len*62+6280)/1000);
 		pBurstInfo->burst_delay=1000000000/(sendPktPerSec/pBurstInfo->burst_packetNumberPerSecond)/100;
 		//printk(KERN_CONT "nicSendRate=%d%% SendPktPerSec=%d BurstPkt=%d delayPerBurst=%d00 ns\n",nicSendRate,sendPktPerSec,pBurstInfo->burst_packetNumberPerSecond,pBurstInfo->burst_delay);
 	}
-	
+
 	memcpy(pBurstInfo->burst_buffer,pktdata,len);
 	//printk(KERN_CONT "Packet Length=%d Send packet count=%d\n",len, burstNum);
 	dma_cache_wback_inv((unsigned long)pBurstInfo->burst_buffer,len);
@@ -4181,8 +4207,8 @@ TX_BACKUP_GMAC_RETRY:
 #endif
 
 	GMAC_SPIN_LOCK(&cp->tx_lock);
-#ifdef HWNAT_CUSTOMIZE	
-		if(re8686_tx_ring_customized[gmac][ring_num])ringNum=MAX_TXRING_NUM-1;	
+#ifdef HWNAT_CUSTOMIZE
+		if(re8686_tx_ring_customized[gmac][ring_num])ringNum=MAX_TXRING_NUM-1;
 #endif
 	checkTXDesc(ringNum, gmac);
 
@@ -4199,10 +4225,10 @@ TX_BACKUP_RING_RETRY:
 
 	if((skb->dev==NULL) || !(skb->dev->rtk_priv_flags&(RTK_IFF_DOMAIN_ELAN|RTK_IFF_DOMAIN_WAN)))
 		skb->dev=dev;
-	
+
 	//save ptxInfo, now we only need to save opts1 and opts2
 	memcpy(&local_txInfo, ptxInfo, sizeof(struct tx_info));
-	
+
 	ETHDBG_PRINT(gmac, cp->debug_enable, cp->debug_times, RTL8686_SKB_TX, "Tx dev=%s nr_frags=%d\n", dev->name, skb_shinfo(skb)->nr_frags);
 	SKB_DBG(skb, cp->debug_enable, cp->debug_times, RTL8686_SKB_TX);
 	cp->cp_stats.tx_sw_num++;
@@ -4245,18 +4271,18 @@ TX_BACKUP_RING_RETRY:
 		DEVPRIV(skb->dev)->net_stats.tx_dropped++;
 		dev_kfree_skb_any(skb);
 		cp->cp_stats.tx_no_desc++;
-		netif_stop_queue(dev);	
+		netif_stop_queue(dev);
 		kick_tx(gmac, ringNum);
 		GMAC_SPIN_UNLOCK(&cp->tx_lock);
 		return NET_XMIT_DROP;
 	}
-			
-	entry = cp->tx_Mhqhead[ringNum];    
+
+	entry = cp->tx_Mhqhead[ringNum];
 	eor = (entry == (cp->re8670_tx_ring_size[ringNum] - 1)) ? RingEnd : 0;
 	if (skb_shinfo(skb)->nr_frags == 0) {
 		u32 len;
 		DMA_TX_DESC  *txd;
-		txd = &cp->tx_Mhqring[ringNum][entry];    
+		txd = &cp->tx_Mhqring[ringNum][entry];
 
 		len = skb->len;
 
@@ -4270,7 +4296,7 @@ TX_BACKUP_RING_RETRY:
 			return NET_XMIT_DROP;
 		}
 
-		if(len > 0)		
+		if(len > 0)
 		// Kaohj --- invalidate DCache before NIC DMA
 			dma_cache_wback_inv((unsigned long)skb->data, len);
 
@@ -4315,14 +4341,14 @@ TX_BACKUP_RING_RETRY:
 			}
 		}
 
-		//[step4] support CPU port direct Tx 
+		//[step4] support CPU port direct Tx
 		if(local_txInfo.opts2.bit.tx_portmask&CPU_PORT_MASK_ALL)
 		{
 			re8686_direct_tx_to_cpu_port(&local_txInfo);
 		}
 
 		TXINFO_DBG(cp, &local_txInfo);
-		
+
 		//apply to txdesc
 		apply_to_txdesc(txd, &local_txInfo);
 #ifdef TX_RING_DEBUG
@@ -4353,7 +4379,7 @@ TX_BACKUP_RING_RETRY:
 		local_txInfo.opts3.bit.tx_dst_stream_id);
 
 		entry = NEXT_TX(entry, cp->re8670_tx_ring_size[ringNum]);
-	} 
+	}
 #ifdef CONFIG_REALTEK_HW_LSO
 	else {
 		re8670_mFrag_xmit(skb, cp, &entry, NULL, ringNum);
@@ -4388,10 +4414,10 @@ TX_BACKUP_RING_RETRY:
 }
 
 __IRAM_NIC
-int re8686_send_with_txInfo(struct sk_buff *skb, struct tx_info* ptxInfo, int ring_num) 
+int re8686_send_with_txInfo(struct sk_buff *skb, struct tx_info* ptxInfo, int ring_num)
 {
 	struct net_device *dev = ROOTDEV;
-	struct re_private_root *root_cp = DEV2CP(dev);	
+	struct re_private_root *root_cp = DEV2CP(dev);
 	unsigned int gmac = ptxInfo->opts3.bit.gmac_id;
 	struct re_private *cp;
 	unsigned entry;
@@ -4432,18 +4458,18 @@ int re8686_send_with_txInfo(struct sk_buff *skb, struct tx_info* ptxInfo, int ri
 		TX_TRACE(0, cp->debug_enable, cp->debug_times, "GMAC%d disabled, free skb.\n", gmac);
 		return -1;
 	}
-	
+
 #ifdef TX_BACKUP_GMAC
 	TX_BACKUP_GMAC_RETRY:
 #endif
-	
+
 	GMAC_SPIN_LOCK(&cp->tx_lock);
 
 	if(unlikely(cp->eth_close == GMAC_TRUE)
 #ifdef TX_CREATE_TEST_PACKET_DEBUG
 		|| cp->test_packet_start
 #endif
-		) 
+		)
 	{
 		DEVPRIV(skb->dev)->net_stats.tx_dropped++;
 		dev_kfree_skb_any(skb);
@@ -4457,7 +4483,7 @@ TX_BACKUP_RING_RETRY:
 
 	if((skb->dev==NULL) || !(skb->dev->rtk_priv_flags&(RTK_IFF_DOMAIN_ELAN|RTK_IFF_DOMAIN_WAN)))
 		skb->dev=dev;
-	
+
 	ETHDBG_PRINT(gmac, cp->debug_enable, cp->debug_times, RTL8686_SKB_TX, "Tx dev=%s nr_frags=%d\n", skb->dev->name, skb_shinfo(skb)->nr_frags);
 	SKB_DBG(skb, cp->debug_enable, cp->debug_times, RTL8686_SKB_TX);
 	cp->cp_stats.tx_sw_num++;
@@ -4479,7 +4505,7 @@ TX_BACKUP_RING_RETRY:
 			ringNum=tx_backup_ring_idx;
 			goto TX_BACKUP_RING_RETRY;
 		}
-	
+
 		ringNum=nic_available_tx_ring_get(cp);
 		if (ringNum != -1)
 			goto TX_BACKUP_RING_RETRY;
@@ -4506,12 +4532,12 @@ TX_BACKUP_RING_RETRY:
 		return NET_XMIT_DROP;
 	}
 
-	entry = cp->tx_Mhqhead[ringNum];	 
+	entry = cp->tx_Mhqhead[ringNum];
 	eor = (entry == (cp->re8670_tx_ring_size[ringNum] - 1)) ? RingEnd : 0;
 	if (skb_shinfo(skb)->nr_frags == 0) {
 		u32 len;
 		DMA_TX_DESC  *txd;
-		txd = &cp->tx_Mhqring[ringNum][entry];    
+		txd = &cp->tx_Mhqring[ringNum][entry];
 
 		len = skb->len;
 
@@ -4524,8 +4550,8 @@ TX_BACKUP_RING_RETRY:
 			GMAC_SPIN_UNLOCK(&cp->tx_lock);
 			return NET_XMIT_DROP;
 		}
-		
-		if(len > 0) 	
+
+		if(len > 0)
 		// Kaohj --- invalidate DCache before NIC DMA
 			dma_cache_wback_inv((unsigned long)skb->data, len);
 
@@ -4565,16 +4591,16 @@ TX_BACKUP_RING_RETRY:
 			}
 		}
 
-		//[step3] support CPU port direct Tx 
+		//[step3] support CPU port direct Tx
 		if(ptxInfo->opts2.bit.tx_portmask&CPU_PORT_MASK_ALL)
 		{
 			re8686_direct_tx_to_cpu_port(ptxInfo);
 		}
-		
+
 		ptxInfo->opts2.bit.cputag = 1;
 
 		TXINFO_DBG(cp, ptxInfo);
-		
+
 		//apply to txdesc
 		apply_to_txdesc(txd, ptxInfo);
 #ifdef TX_RING_DEBUG
@@ -4605,7 +4631,7 @@ TX_BACKUP_RING_RETRY:
 		ptxInfo->opts3.bit.tx_dst_stream_id);
 
 		entry = NEXT_TX(entry, cp->re8670_tx_ring_size[ringNum]);
-	} 
+	}
 #ifdef CONFIG_REALTEK_HW_LSO
 	else {
 		re8670_mFrag_xmit(skb, cp, &entry, ptxInfo, ringNum);
@@ -4972,12 +4998,12 @@ int re8686_wifi_hwlookup_deamsdu(struct sk_buff *skb, struct tx_info* ptxInfo, i
 *	value: the value to set VLAN_REG/ VLAN1_REG
 */
 __IRAM_NIC
-int re8686_set_vlan_register(struct tx_info* ptxInfo, unsigned char reg_num, unsigned int value) 
+int re8686_set_vlan_register(struct tx_info* ptxInfo, unsigned char reg_num, unsigned int value)
 {
 	struct re_private_root *root_cp = &re_private_data_root;
 	struct re_private *cp = root_cp->re_private_data_ptr[ptxInfo->opts3.bit.gmac_id];
 	unsigned int gmac = cp->gmac;
-	
+
 	if(!value)
 	{
 		printk(KERN_CONT " %s %d: wrong VLAN register value=%d\n", __func__, __LINE__, value);
@@ -5009,7 +5035,7 @@ int re8686_set_vlan_register(struct tx_info* ptxInfo, unsigned char reg_num, uns
 *	value_p: the pointer to get content of VLAN_REG/ VLAN1_REG
 */
 __IRAM_NIC
-int re8686_get_vlan_register(struct tx_info* ptxInfo, unsigned char reg_num, unsigned int *value_p) 
+int re8686_get_vlan_register(struct tx_info* ptxInfo, unsigned char reg_num, unsigned int *value_p)
 {
 	struct re_private_root *root_cp = &re_private_data_root;
 	struct re_private *cp = root_cp->re_private_data_ptr[ptxInfo->opts3.bit.gmac_id];
@@ -5043,10 +5069,10 @@ int re8670_start_xmit_common(struct sk_buff *skb, struct net_device *dev, struct
 __IRAM_NIC int rtk_rg_fwdEngine_xmit (struct sk_buff *skb, void *void_ptx, void *void_ptxMask) // (void *) using (rtk_rg_txdesc_t *) casting in romeDriver, using (struct tx_info*) casting in re8686.c.
 {
 	struct tx_info *ptx=(struct tx_info *)void_ptx;
-	struct tx_info *ptxMask=(struct tx_info *)void_ptxMask;			
+	struct tx_info *ptxMask=(struct tx_info *)void_ptxMask;
 	skb->cb[0]=1;
 	skb->dev = rtl8686_dev_table[0].dev_instant;
-	re8670_start_xmit_common(skb,skb->dev,ptx,ptxMask);	
+	re8670_start_xmit_common(skb,skb->dev,ptx,ptxMask);
 	return 0;
 }
 
@@ -5059,7 +5085,7 @@ __IRAM_NIC int re8670_start_xmit (struct sk_buff *skb, struct net_device *dev)	/
 
 __IRAM_NIC int re8670_start_xmit_common(struct sk_buff *skb, struct net_device *dev, struct tx_info *ptx, struct tx_info *ptxMask)
 #else
-#if defined(CONFIG_RTK_L34_ENABLE) && defined(CONFIG_APOLLO_GPON_FPGATEST) 
+#if defined(CONFIG_RTK_L34_ENABLE) && defined(CONFIG_APOLLO_GPON_FPGATEST)
 extern int _rtk_rg_virtualMAC_with_PON_get(void);
 #endif
 __IRAM_NIC int re8670_start_xmit_txInfo (struct sk_buff *skb, struct net_device *dev, struct tx_info* ptxInfo, struct tx_info* ptxInfoMask)	//luke
@@ -5119,16 +5145,16 @@ __IRAM_NIC int re8670_start_xmit_txInfo (struct sk_buff *skb, struct net_device 
 TX_BACKUP_GMAC_RETRY:
 #endif
 
-	GMAC_SPIN_LOCK(&cp->tx_lock);	
-#ifdef HWNAT_CUSTOMIZE	
-	if(re8686_tx_ring_customized[gmac][ring_num])ring_num=MAX_TXRING_NUM-1;	
+	GMAC_SPIN_LOCK(&cp->tx_lock);
+#ifdef HWNAT_CUSTOMIZE
+	if(re8686_tx_ring_customized[gmac][ring_num])ring_num=MAX_TXRING_NUM-1;
 #endif
 
 	if(unlikely(cp->eth_close == GMAC_TRUE || INVERIFYMODE)
 #ifdef TX_CREATE_TEST_PACKET_DEBUG
 		|| cp->test_packet_start
 #endif
-		) 
+		)
 	{
 		DEVPRIV(skb->dev)->net_stats.tx_dropped++;
 		dev_kfree_skb_any(skb);
@@ -5185,11 +5211,11 @@ TX_BACKUP_RING_RETRY:
 #endif
 		DEVPRIV(skb->dev)->net_stats.tx_dropped++;
 		dev_kfree_skb_any(skb);
-		cp->cp_stats.tx_no_desc++;		
+		cp->cp_stats.tx_no_desc++;
 		netif_stop_queue(dev);
 		GMAC_SPIN_UNLOCK(&cp->tx_lock);
 		return NET_XMIT_DROP;
-	}	
+	}
 
 	entry = cp->tx_Mhqhead[ring_num];
 	eor = (entry == (cp->re8670_tx_ring_size[ring_num] - 1)) ? RingEnd : 0;
@@ -5197,7 +5223,7 @@ TX_BACKUP_RING_RETRY:
 		DMA_TX_DESC  *txd = &cp->tx_Mhqring[ring_num][entry];
 		u32 len;
 
-		len = skb->len;	
+		len = skb->len;
 
 		if(len < RE8686_HW_SMALLEST_DATA_LEN)
 		{
@@ -5208,13 +5234,13 @@ TX_BACKUP_RING_RETRY:
 			GMAC_SPIN_UNLOCK(&cp->tx_lock);
 			return NET_XMIT_DROP;
 		}
-		
+
 		// Kaohj --- invalidate DCache before NIC DMA
 		dma_cache_wback_inv((unsigned long)skb->data, len);
 
 		//default setting, always need this
 		txInfo.addr = CPHYSADDR(skb->data);
-		
+
 		//[step1] opts1 set init value
 		txInfo.opts1.dw = (eor|len|DescOwn|FirstFrag|LastFrag|TxCRC|IPCS);
 
@@ -5224,7 +5250,7 @@ TX_BACKUP_RING_RETRY:
 			_rtk_rg_fwdEngineTxDescSetting((void*)&txInfo,(void*)ptx,(void*)ptxMask);
 #endif
 		//plz put tx additional setting into this function
-		tx_additional_setting(skb, dev, &txInfo);		
+		tx_additional_setting(skb, dev, &txInfo);
 		do_txInfoMask(&txInfo, ptxInfo, ptxInfoMask);
 
 		//[step3] HW LSO or jumbo frame decision
@@ -5256,13 +5282,13 @@ TX_BACKUP_RING_RETRY:
 			}
 		}
 
-		//[step4] support CPU port direct Tx 
+		//[step4] support CPU port direct Tx
 		if(txInfo.opts2.bit.tx_portmask&CPU_PORT_MASK_ALL)
 		{
-			re8686_direct_tx_to_cpu_port(&txInfo);			
+			re8686_direct_tx_to_cpu_port(&txInfo);
 		}
 
-#if defined(CONFIG_RTK_L34_ENABLE) && defined(CONFIG_APOLLO_GPON_FPGATEST) 
+#if defined(CONFIG_RTK_L34_ENABLE) && defined(CONFIG_APOLLO_GPON_FPGATEST)
 		//20150703LUKE: filter packet from protocol stack send to virtualmac mapping portmask!
 		txInfo.opts3.bit.tx_portmask&=~(_rtk_rg_virtualMAC_with_PON_get());
 #endif
@@ -5330,16 +5356,27 @@ TX_BACKUP_RING_RETRY:
 	return NETDEV_TX_OK;
 }
 
-__IRAM_NIC int re8670_start_xmit (struct sk_buff *skb, struct net_device *dev)	//shlee temp, fix this later
+__IRAM_NIC int re8670_start_xmit(struct sk_buff *skb,
+                                struct net_device *dev)
 {
-	struct re_private_root *root_cp = &re_private_data_root;
-	
-	if (root_cp->txfunc)
-		return root_cp->txfunc(skb, dev);
-	else
-		return re8670_start_xmit_txInfo(skb,dev,NULL,NULL);
-}
+    struct re_private_root *root_cp = &re_private_data_root;
+    tfunc_t txfunc;
+    int ret;
 
+    rcu_read_lock();
+
+    txfunc = READ_ONCE(root_cp->txfunc);
+
+    if (txfunc)
+        ret = txfunc(skb, dev);
+    else
+        ret = re8670_start_xmit_txInfo(
+            skb, dev, NULL, NULL);
+
+    rcu_read_unlock();
+
+    return ret;
+}
 /* Set or clear the multicast filter for this adaptor.
    This routine is not state sensitive and need not be SMP locked. */
 static void __re8670_set_rx_mode (unsigned int gmac)
@@ -5367,7 +5404,7 @@ static void re8670_set_rx_mode (struct net_device *dev)
 
 		if(cp->gmac_enabled != GMAC_TRUE)
 			continue;
-		
+
 		//GMAC_SPIN_LOCK(&cp->rx_lock);
 		__re8670_set_rx_mode(cp->gmac);
 		//GMAC_SPIN_UNLOCK(&cp->rx_lock);
@@ -5419,7 +5456,7 @@ static void re8670_stop_hw (struct re_private *cp)
 	udelay(10);
 
 	for(j=0;j<MAX_RXRING_NUM;j++)
-		cp->rx_Mtail[j] = 0;		
+		cp->rx_Mtail[j] = 0;
 	for(j=0;j<MAX_TXRING_NUM;j++)
 		cp->tx_Mhqhead[j] = cp->tx_Mhqtail[j] = 0;
 }
@@ -5458,7 +5495,7 @@ static void re8670_ip_enable(unsigned int gmac)
 static void re8670_reset_hw (struct re_private *cp)
 	{
 	unsigned int gmac = cp->gmac;
-	
+
 	/* After apollo use this for totaly gmac reset
 	, in old method, mring can't receive packet at first time packet coming */
 	//disable_irq(cp->irq);
@@ -5501,16 +5538,16 @@ int re8686_set_flow_control(unsigned int gmac, unsigned int ring, unsigned char 
 	#ifndef CONFIG_GMAC1_USABLE
 	if (gmac==1)
 		goto error;
-	#endif 
+	#endif
 	#ifndef CONFIG_GMAC2_USABLE
 	if (gmac==2)
 		goto error;
-	#endif 
+	#endif
 	#ifdef CONFIG_RTK_SINGLE_RX_RING
 	if (ring >= MAX_RXRING_NUM)
 		goto error;
 	#endif
-	
+
 	if(enable || (cp->re8670_rx_ring_size[ring] == 4096))
 	{
 		ring_size = (cp->re8670_rx_ring_size[ring]);
@@ -5529,7 +5566,7 @@ int re8686_set_flow_control(unsigned int gmac, unsigned int ring, unsigned char 
 		reg32_val = (desc_l<<24)|((desc_h)<<4)|(RLE0787_R32(gmac, EthrntRxCPU_Des_Num)&0x00ffff0f);
 		RLE0787_W32(gmac, EthrntRxCPU_Des_Num, reg32_val);
 		reg32_val = (desc_l<<8)|desc_h|(RLE0787_R32(gmac, RxCDO)&0xffff00f0);
-		RLE0787_W32(gmac, RxCDO, reg32_val);		
+		RLE0787_W32(gmac, RxCDO, reg32_val);
 	}
 #ifndef CONFIG_RTK_SINGLE_RX_RING
 	else
@@ -5557,14 +5594,14 @@ static void multi_rtx_ring_init(struct re_private *cp)
 	u32 reg32_val, ring0_size_msk;
 	u16 desc_l, desc_h;
 	int i;
-	
+
 	for(i=0;i<MAX_TXRING_NUM;i++)
-	{		
+	{
 		RLE0787_W32(gmac, TxFDP1+(ADDR_OFFSET*i), CPHYSADDR(cp->tx_Mhqring[idx_sw2hw(i)]));
 		RLE0787_W16(gmac, TxCDO1+(ADDR_OFFSET*i), 0);
 	}
 	for(i=0;i<MAX_RXRING_NUM;i++)
-	{			
+	{
 		/*we set flow control even if we don't enable this queue.........
 		this is because we want to prevent triggering flow control of the queue we disable.....*/
 		if(i==0)
@@ -5618,36 +5655,36 @@ static void re8670_init_hw (struct re_private *cp)
 	vlan_detag(gmac, GMAC_OFF);
 	// Kao
 	//20170502: disable gmac padding by default
-	RLE0787_W32(gmac, TCR,(u32)(0x0C01));	
+	RLE0787_W32(gmac, TCR,(u32)(0x0C01));
 	RLE0787_W32(gmac, CPUtagCR,(u32)(0x0000));  /* Turn off CPU tag function */
 	//cpu tag function
 	cputag_info = (CTEN_RX | 2<<CT_RSIZE_L | 2<<CT_TSIZE | CT_APPLO_PRO | CTPM_8370 | CTPV_8370);
 	RLE0787_W32(gmac, CPUtagCR,cputag_info); /* Turn on the cpu tag adding function */  //czyao 8672c
-	RLE0787_W32(gmac, CPUtag1CR, (CT1_SID));	
+	RLE0787_W32(gmac, CPUtag1CR, (CT1_SID));
 
 	multi_rtx_ring_init(cp);
 
 	status = RLE0787_R8(gmac, MSR);
 	status = status | (TXFCE|FORCE_TX);	// enable tx flowctrl
 	status = status | RXFCE;
-	RLE0787_W8(gmac, MSR, status);	
+	RLE0787_W8(gmac, MSR, status);
 	// Kao, set hw ID for physical match
 	hwaddr = (u32 *)ROOTDEV->dev_addr;
-	RLE0787_W32(gmac, IDR0, *hwaddr);	
+	RLE0787_W32(gmac, IDR0, *hwaddr);
 	hwaddr = (u32 *)(ROOTDEV->dev_addr+4);
-	RLE0787_W32(gmac, IDR4, *hwaddr);	
-	
-	RLE0787_W32(gmac, CONFIG_REG, Rff_size_sel_2k);	
+	RLE0787_W32(gmac, IDR4, *hwaddr);
+
+	RLE0787_W32(gmac, CONFIG_REG, Rff_size_sel_2k);
 	en_rx_mring_int_split(gmac);
 	config_rx_sideband(gmac, GMAC_ON);
 	set_rring_route(gmac);
-	
+
 	re8670_start_hw(cp);
 	__re8670_set_rx_mode(cp->gmac);
 
 	RLE0787_W16(gmac, ISR, 0xffff);/*clear all interrupt*/
 	RLE0787_W32(gmac, ISR1, 0xffffffff);/*clear all interrupt*/
-	RLE0787_W16(gmac, IMR, RX_ALL(gmac)); 
+	RLE0787_W16(gmac, IMR, RX_ALL(gmac));
 	UNMASK_IMR0_RXALL(gmac);
 #ifdef TX_INTR_HANDLE
 #ifdef TX_RECYCLE_SKB_USING_TOK_INT
@@ -5667,9 +5704,9 @@ inline void re8686_customized_tx(struct re_private *cp, unsigned int len, unsign
 	unsigned entry;
 	volatile DMA_TX_DESC *txd;
 	unsigned int gmac=cp->gmac;
-	
+
 	GMAC_SPIN_LOCK(&cp->tx_lock);
-	
+
 	entry = cp->tx_Mhqhead[ringNum];
 	txd = &cp->tx_Mhqring[ringNum][entry];
 
@@ -5682,17 +5719,17 @@ inline void re8686_customized_tx(struct re_private *cp, unsigned int len, unsign
 	txd->opts2 = pTxInfo->opts2.dw;
 	txd->opts3 = pTxInfo->opts3.dw;
 	txd->opts4 = pTxInfo->opts4.dw;
-	wmb();		
+	wmb();
 	txd->opts1 &= ~(0x1ffff|DescOwn|FirstFrag|LastFrag|TxCRC|IPCS);
 	txd->opts1 |= (len|DescOwn|FirstFrag|LastFrag|TxCRC|IPCS);
 
 KICK_TX:
 	cp->tx_Mhqhead[ringNum] = NEXT_TX(entry, cp->re8670_tx_ring_size[ringNum]);
-	
+
 	GMAC_SPIN_UNLOCK(&cp->tx_lock);
 
 	//wmb();
-	
+
 	kick_tx(gmac, ringNum);
 
 	return;
@@ -5705,14 +5742,14 @@ inline void re8686_customized_quickTx(struct re_private *cp, unsigned int len, u
 	u32 txd_opts1;
 	unsigned int gmac=cp->gmac;
 	int delayTimes;
-	
+
 	//GMAC_SPIN_LOCK(&cp->tx_lock);
-	
+
 	entry = cp->tx_Mhqhead[ringNum];
 	txd = &cp->tx_Mhqring[ringNum][entry];
 
 	txd_opts1 = txd->opts1;
-	
+
 	if(txd->opts1&DescOwn){
 		cp->cp_stats.rx_customized_tx_owned++;
 		while(txd->opts1&DescOwn)
@@ -5736,11 +5773,11 @@ inline void re8686_customized_quickTx(struct re_private *cp, unsigned int len, u
 
 KICK_TX:
 	cp->tx_Mhqhead[ringNum] = NEXT_TX(entry,  cp->re8670_tx_ring_size[ringNum]);
-	
+
 	//GMAC_SPIN_UNLOCK(&cp->tx_lock);
 
 	//wmb();
-	
+
 	kick_tx(gmac, ringNum);
 
 	return;
@@ -5797,11 +5834,11 @@ inline void re8686_customized_dualTx(struct re_private *cp, unsigned int len, un
 
 KICK_TX:
 	cp->tx_Mhqhead[ringNum] = NEXT_TX(entry,  cp->re8670_tx_ring_size[ringNum]);
-	
+
 	//GMAC_SPIN_UNLOCK(&cp->tx_lock);
 
 	//wmb();
-	
+
 	kick_tx(gmac, ringNum);
 
 	return;
@@ -5812,17 +5849,17 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 {
 #ifdef HWNAT_CUSTOMIZE
 	int i,j;
-	struct re_private *cp;		
+	struct re_private *cp;
 	struct rx_info rxInfo;
 	uint32 gmac,rxRingNum,txRingNum;
 	unsigned char *rx_data_buffer=NULL;
-		
+
 	if((customized_entry.gmac >= MAX_GMAC_NUM)||(customized_entry.rxRingNum >= (MAX_RXRING_NUM-1))||(customized_entry.txRingNum >= (MAX_TXRING_NUM-1))||(customized_entry.type>=CUSTOMIZE_TYPE_MAX)) return -ERANGE;
 
 	gmac=customized_entry.gmac;
 	rxRingNum=customized_entry.rxRingNum;
 	txRingNum=customized_entry.txRingNum;
-		
+
 	cp=&re_private_data[gmac];
 
 	printk(KERN_CONT "re8686_customized_rx_and_tx gmac = %d rxRingNum = %d\n",gmac, rxRingNum);
@@ -5837,10 +5874,10 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 	else
 	{
 		printk(KERN_CONT "re8686_rx_ring_data_buffer[%d][%d] has been set before! But now need to reset!\n",gmac,rxRingNum);
-		
+
 		kfree(re8686_rx_ring_data_buffer[gmac][rxRingNum]);
 		re8686_rx_ring_data_buffer[gmac][rxRingNum]=NULL;
-		
+
 		rx_data_buffer=kzalloc(cp->re8670_rx_ring_size[rxRingNum]*cp->rx_buff_size,GFP_ATOMIC);
 
 		if(rx_data_buffer){
@@ -5850,12 +5887,12 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 			return -ENOMEM;
 		}
 	}
-	
+
 	if(re8686_rx_descIdx_customized_tx_descAddr[gmac][rxRingNum]==NULL){
 		re8686_customized_tx_descAddr_t *tx_descAddr_buffer=kzalloc(cp->re8670_rx_ring_size[rxRingNum]*sizeof(re8686_customized_tx_descAddr_t),GFP_ATOMIC);
 		if(tx_descAddr_buffer){
 			dma_cache_inv((unsigned long)tx_descAddr_buffer, cp->re8670_rx_ring_size[rxRingNum]*sizeof(re8686_customized_tx_descAddr_t));
-			re8686_rx_descIdx_customized_tx_descAddr[gmac][rxRingNum]=tx_descAddr_buffer;		
+			re8686_rx_descIdx_customized_tx_descAddr[gmac][rxRingNum]=tx_descAddr_buffer;
 		}else{
 			printk(KERN_CONT "[re8686_rx_descIdx_customized_tx_descAddr]No memory!\n");
 			return -ENOMEM;
@@ -5865,7 +5902,7 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 	{
 			printk(KERN_CONT "re8686_rx_descIdx_customized_tx_descAddr[%d][%d] has been set before! But now need to reset!\n",gmac,rxRingNum);
 	}
-	
+
 	printk(KERN_CONT "enter %s %s gmac%d rxRing%d txRing%d!! \n",__FUNCTION__,customized_entry.valid?"valid":"invalid",gmac,rxRingNum,txRingNum);
 #if 1 //Wen: For sync VXLAN/NPTv6 fastforward issue, sync from luna_pro_cmcc_cu: [JIM][revision 39486]fix lock wait problem for nic acc data path.
 	re8686_customized_rx_and_tx_used[gmac] = 1;
@@ -5879,7 +5916,7 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 		eth_close[gmac]=1;
 		re8670_stop_hw(cp);
 
-		
+
 		re8686_rx_ring_customized_func[gmac][rxRingNum][customized_entry.type-1]=rxHookFunc;
 		re8686_rx_ring_ext_pmsk[gmac][rxRingNum][customized_entry.type-1]=customized_entry.rx_ext_pmsk;
 		re8686_tx_ring_customized_func[gmac][txRingNum]=txHookFunc;
@@ -5893,7 +5930,7 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 			//if(re8686_rx_ring_data_buffer[gmac][j]){ //WEN: SVN 38896 from luna_pro_cmcc: Jim fix- fix synchronization problem between hw and sw when re8686_customized_rx_and_tx is used.
 			{
 				for(i=0; i<cp->re8670_rx_ring_size[j]; i++){
-					if (i == (cp->re8670_rx_ring_size[j] - 1))			
+					if (i == (cp->re8670_rx_ring_size[j] - 1))
 						cp->rx_Mring[j][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 					else
 						cp->rx_Mring[j][i].opts1 = (DescOwn | cp->rx_buff_size);
@@ -5902,16 +5939,16 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 				cp->tx_Mhqhead[re8686_rx_ring_customized_tx_ringNum[gmac][j]]=0;
 			}
 		}
-		
+
 		//prepare rx desc
 		for(i = 0; i < cp->re8670_rx_ring_size[rxRingNum]; i++){
 			desc = &cp->rx_Mring[rxRingNum][i];
 
 			desc->addr = (u32)(rx_data_buffer+i*cp->rx_buff_size) | UNCACHE_MASK;
-			
+
 			if(dynamic_sram_desc==0 && rxPrepareFunc)rxPrepareFunc(cp, (struct rx_info *)desc);
-		
-			if (i == (cp->re8670_rx_ring_size[rxRingNum] - 1))			
+
+			if (i == (cp->re8670_rx_ring_size[rxRingNum] - 1))
 				cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 			else
 				cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
@@ -5923,13 +5960,13 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 		//disable fc
 		re8686_rx_ring_fc_state[gmac][rxRingNum] = cp->re8670_rx_flow_control_status[rxRingNum];
 		re8686_set_flow_control(gmac, rxRingNum, OFF);
-		
+
 		GMAC_SPIN_UNLOCK(&cp->rx_lock);
 
 		GMAC_SPIN_LOCK(&cp->tx_lock);
 
 		re8686_tx_ring_customized[gmac][txRingNum]=1;
-		
+
 		memset(re8686_rx_descIdx_customized_tx_descAddr[gmac][rxRingNum], 0, cp->re8670_rx_ring_size[rxRingNum]*sizeof(re8686_customized_tx_descAddr_t));
 		//refill tx desc
 		if(dynamic_sram_desc>0 && txHookFunc)
@@ -5941,7 +5978,7 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 				if(i&0x1){
 					//LS
 					tx_addr=(u32)(rx_data_buffer+((i>>1)*cp->rx_buff_size)) | UNCACHE_MASK;
-				
+
 					cp->tx_Mhqring[txRingNum][i].opts1&=(~(DescOwn|FirstFrag|RingEnd));
 					cp->tx_Mhqring[txRingNum][i].opts1|=LastFrag;
 					cp->tx_Mhqring[txRingNum][i].addr=tx_addr+customized_entry.txInfo_addr_offset_v2;
@@ -5954,7 +5991,7 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 				}else{
 					//FS
 					tx_addr=(u32)(re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum]+((i>>1)*MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE)) | UNCACHE_MASK;
-					
+
 					cp->tx_Mhqring[txRingNum][i].opts1&=(~(0x1ffff|DescOwn|LastFrag|RingEnd));
 					cp->tx_Mhqring[txRingNum][i].opts1|=(customized_entry.txPreLen|FirstFrag);
 					cp->tx_Mhqring[txRingNum][i].addr=tx_addr;
@@ -6004,19 +6041,19 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 		re8686_rx_ring_ext_pmsk[gmac][rxRingNum][customized_entry.type-1]=0;
 		re8686_rx_ring_customized_preLen[gmac][rxRingNum]=0;
 		re8686_rx_ring_customized_tx_ringNum[gmac][rxRingNum]=0;
-		
+
 		for(i = 0; i < cp->re8670_rx_ring_size[rxRingNum]; i++){
 			cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-			if (i == (cp->re8670_rx_ring_size[rxRingNum] - 1))			
+			if (i == (cp->re8670_rx_ring_size[rxRingNum] - 1))
 				cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 			else
 				cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
 			cp->rx_Mring[rxRingNum][i].opts2 = 0;
 		}
-		
+
 		if(re8686_rx_ring_data_buffer[gmac][rxRingNum])kfree(re8686_rx_ring_data_buffer[gmac][rxRingNum]);
 		re8686_rx_ring_data_buffer[gmac][rxRingNum]=NULL;
-		
+
 		if(re8686_rx_descIdx_customized_tx_descAddr[gmac][rxRingNum])kfree(re8686_rx_descIdx_customized_tx_descAddr[gmac][rxRingNum]);
 		re8686_rx_descIdx_customized_tx_descAddr[gmac][rxRingNum]=NULL;
 
@@ -6026,7 +6063,7 @@ int re8686_customized_rx_and_tx(struct rtl8686_hwnat_customized_entry customized
 		//recovery fc
 		re8686_set_flow_control(gmac, rxRingNum, re8686_rx_ring_fc_state[gmac][rxRingNum]);
 		re8686_rx_ring_fc_state[gmac][rxRingNum] = ON;
-		
+
 		GMAC_SPIN_UNLOCK(&cp->rx_lock);
 
 		GMAC_SPIN_LOCK(&cp->tx_lock);
@@ -6054,9 +6091,9 @@ int re8686_customized_tx_stream_id(unsigned int gmac, unsigned int txRingNum, un
 	struct re_private *cp;
 
 	if((gmac >= MAX_GMAC_NUM)||(txRingNum >= (MAX_TXRING_NUM-1))||(streamID >= 0x7f)) return -ERANGE;
-	
+
 	cp=&re_private_data[gmac];
-	
+
 	//refill tx desc
 	GMAC_SPIN_LOCK(&cp->tx_lock);
 	for(i = 0; i < cp->re8670_tx_ring_size[txRingNum]; i++){
@@ -6072,7 +6109,7 @@ int re8686_customized_tx_stream_id(unsigned int gmac, unsigned int txRingNum, un
 static int re8670_refill_rx (struct re_private *cp)
 {
 	unsigned int gmac = cp->gmac;
-	unsigned int i, j;	
+	unsigned int i, j;
 
 	for(j=0;j<MAX_RXRING_NUM;j++)
 	{
@@ -6091,15 +6128,15 @@ static int re8670_refill_rx (struct re_private *cp)
 			if ((u32)skb->data &0x3)
 				printk(KERN_DEBUG "skb->data unaligment %8x\n",(u32)skb->data);
 
-			cp->rx_Mring[j][i].addr = (u32)skb->data|UNCACHE_MASK;      
+			cp->rx_Mring[j][i].addr = (u32)skb->data|UNCACHE_MASK;
 
-			if (i == (cp->re8670_rx_ring_size[j] - 1))          
+			if (i == (cp->re8670_rx_ring_size[j] - 1))
 				cp->rx_Mring[j][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 			else
 				cp->rx_Mring[j][i].opts1 =(DescOwn | cp->rx_buff_size);
 			cp->rx_Mring[j][i].opts2 = 0;
 
-		}    
+		}
 	}
 
 	return 0;
@@ -6134,16 +6171,16 @@ static void re8670_tx_timeout (struct net_device *dev, unsigned int txqueue)
 	struct re_private_root *root_cp = DEV2CP(dev);
 	struct re_private *cp;
 	unsigned int gmac;
-	
+
 	printk(KERN_CONT "%s %d enter dev=%s\n", __func__, __LINE__, dev->name);
-	
+
 #ifdef TX_WATCHDOG_TIMEOUT_RESET
 	re8670_reset();
 #endif
 	for(gmac=0 ; gmac<MAX_GMAC_NUM ; gmac++)
 	{
 		cp = root_cp->re_private_data_ptr[gmac];
-		cp->cp_stats.tx_timeouts++;		
+		cp->cp_stats.tx_timeouts++;
 	}
 	if (netif_queue_stopped(dev))
 		netif_wake_queue(dev);
@@ -6156,11 +6193,11 @@ static int re8670_init_rings (struct re_private *cp)
 	int j;
 	for(j=0;j<MAX_TXRING_NUM;j++){
 		cp->tx_Mhqhead[j] = cp->tx_Mhqtail[j] = 0;
-	}	
+	}
 
 	for(j=0;j<MAX_RXRING_NUM;j++){
-		cp->rx_Mtail[j] = 0;		
-	}	
+		cp->rx_Mtail[j] = 0;
+	}
 	return re8670_refill_rx (cp);
 }
 
@@ -6169,10 +6206,10 @@ static int re8670_alloc_rings (struct re_private *cp)
 	unsigned int gmac;
 	void*	pBuf;
 	int j;
-	
+
 	gmac = cp->gmac;
 	for(j=0;j<MAX_RXRING_NUM;j++)
-	{    
+	{
 		pBuf = kzalloc(RE8670_RXRING_BYTES(cp->re8670_rx_ring_size[j]), GFP_ATOMIC);
 		if (!pBuf)
 			goto ErrMem;
@@ -6216,16 +6253,16 @@ ErrMem:
 
 	for(j=0;j<MAX_RXRING_NUM;j++)
 	{
-		if (cp->rx_skb[j])    
+		if (cp->rx_skb[j])
 			kfree(cp->rx_skb[j]);
-	}        
+	}
 
 	for(j=0;j<MAX_TXRING_NUM;j++)
-	{        
-		if (cp->tx_skb[j])    
-			kfree(cp->tx_skb[j]);	
+	{
+		if (cp->tx_skb[j])
+			kfree(cp->tx_skb[j]);
 	}
-	
+
 	return -ENOMEM;
 
 }
@@ -6234,7 +6271,7 @@ static void re8670_clean_rings (struct re_private *cp)
 {
 	unsigned int gmac = cp->gmac;
 	unsigned i,j;
-	
+
 	for (j = 0; j < MAX_RXRING_NUM; j++) {
 		if(cp->rx_skb[j]){
 			for (i = 0; i < cp->re8670_rx_ring_size[j]; i++) {
@@ -6242,7 +6279,7 @@ static void re8670_clean_rings (struct re_private *cp)
 					dev_kfree_skb(cp->rx_skb[j][i].skb);
 				}
 			}
-			memset(cp->rx_skb[j], 0, sizeof(struct ring_info) * cp->re8670_rx_ring_size[j]);		
+			memset(cp->rx_skb[j], 0, sizeof(struct ring_info) * cp->re8670_rx_ring_size[j]);
 		}
 	}
 	for (j = 0; j < MAX_TXRING_NUM; j++) {
@@ -6256,7 +6293,7 @@ static void re8670_clean_rings (struct re_private *cp)
 					}
 				}
 			}
-			memset(cp->tx_skb[j], 0, sizeof(struct ring_info) * cp->re8670_tx_ring_size[j]);	
+			memset(cp->tx_skb[j], 0, sizeof(struct ring_info) * cp->re8670_tx_ring_size[j]);
 		}
 	}
 }
@@ -6273,31 +6310,31 @@ static void re8670_free_rings (struct re_private *cp)
 			kfree(cp->rxdesc_Mbuf[j]);
 			cp->rxdesc_Mbuf[j] = NULL;
 		}
-		
-		cp->rx_Mring[j] = NULL;   
 
-		if (cp->rx_skb[j]) {   			
+		cp->rx_Mring[j] = NULL;
+
+		if (cp->rx_skb[j]) {
 			kfree(cp->rx_skb[j]);
 			cp->rx_skb[j] = NULL;
 		}
 		cp->rx_skb[j]=NULL;
-	}     
+	}
 
-	for(j=0;j<MAX_TXRING_NUM;j++)        
+	for(j=0;j<MAX_TXRING_NUM;j++)
 	{
 		if (cp->txdesc_Mbuf[j]) {
 			kfree(cp->txdesc_Mbuf[j]);
 			cp->txdesc_Mbuf[j] = NULL;
 		}
-		
+
 		cp->tx_Mhqring[j] = NULL;
 
-		if (cp->tx_skb[j])   {			
+		if (cp->tx_skb[j])   {
 			kfree(cp->tx_skb[j]);
 			cp->tx_skb[j] = NULL;
 		}
-		cp->tx_skb[j]=NULL;	
-	}    
+		cp->tx_skb[j]=NULL;
+	}
 
 }
 
@@ -6306,9 +6343,9 @@ static int re8670_open (struct net_device *dev)
 	struct re_private_root *root_cp = DEV2CP(dev);
 	struct re_private *cp;
 	unsigned int gmac;
-	int rc=0;	
-#if defined(CONFIG_RTL9607C_SERIES) && defined(HWNAT_CUSTOMIZE)	
-	unsigned int sramIsUsedByOthers = FALSE;	
+	int rc=0;
+#if defined(CONFIG_RTL9607C_SERIES) && defined(HWNAT_CUSTOMIZE)
+	unsigned int sramIsUsedByOthers = FALSE;
 #endif
 #ifdef TX_KICK_RING_USING_POLLING
 	int ring_num;
@@ -6317,28 +6354,28 @@ static int re8670_open (struct net_device *dev)
 	if (netif_msg_ifup(root_cp))
 		printk(KERN_DEBUG "%s: enabling interface\n", dev->name);
 
-	if(dev_num == 0) {	
+	if(dev_num == 0) {
 		printk(KERN_CONT "%s %d\n", __func__, __LINE__);
-#if 0//defined(HWNAT_CUSTOMIZE)	
-		_hwnat_customized_version_set(hwnat_customized_version);	
-#endif	
-#if 0//defined(CONFIG_RTL9607C_SERIES) && defined(HWNAT_CUSTOMIZE)	
-		if(rtk_dynamic_sram_state_get()==ENABLED)	
-		{	
-			printk("\033[1;33;41m[WARNING] Sram is used by others, so skip dynamic sram settings for rx/tx desc @ %s(%d)\033[0m\n", __FUNCTION__, __LINE__);	
-			sramIsUsedByOthers = TRUE;	
-		}	
+#if 0//defined(HWNAT_CUSTOMIZE)
+		_hwnat_customized_version_set(hwnat_customized_version);
+#endif
+#if 0//defined(CONFIG_RTL9607C_SERIES) && defined(HWNAT_CUSTOMIZE)
+		if(rtk_dynamic_sram_state_get()==ENABLED)
+		{
+			printk("\033[1;33;41m[WARNING] Sram is used by others, so skip dynamic sram settings for rx/tx desc @ %s(%d)\033[0m\n", __FUNCTION__, __LINE__);
+			sramIsUsedByOthers = TRUE;
+		}
 #endif
 		for(gmac=0 ; gmac<MAX_GMAC_NUM ; gmac++)
 		{
 			cp = root_cp->re_private_data_ptr[gmac];
 			printk(KERN_CONT "%s %d\n", __func__, __LINE__);
-			if(cp->gmac_enabled == GMAC_TRUE) 
+			if(cp->gmac_enabled == GMAC_TRUE)
 			{
-				rtk_gmac_set_rxbufsize(root_cp);	/* set new rx buf size */	
-#if 0//defined(CONFIG_RTL9607C_SERIES)  && defined(HWNAT_CUSTOMIZE)	
-				if(sramIsUsedByOthers==FALSE)	
-						rtk_dynamic_sram_restart(gmac);	
+				rtk_gmac_set_rxbufsize(root_cp);	/* set new rx buf size */
+#if 0//defined(CONFIG_RTL9607C_SERIES)  && defined(HWNAT_CUSTOMIZE)
+				if(sramIsUsedByOthers==FALSE)
+						rtk_dynamic_sram_restart(gmac);
 #endif
 #ifdef CONFIG_RTK_WFOAX
 				if (gmac != WFO_GMAC_NO)
@@ -6369,7 +6406,7 @@ static int re8670_open (struct net_device *dev)
 
 #ifdef TX_RECYCLE_SKB_USING_POLLING
 				if(timer_pending(&cp->tok_polling_timer))
-					timer_delete(&cp->tok_polling_timer);	
+					timer_delete(&cp->tok_polling_timer);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 				init_timer(&cp->tok_polling_timer);
 				cp->tok_polling_timer.data = cp;
@@ -6381,7 +6418,7 @@ static int re8670_open (struct net_device *dev)
 #endif
 #ifdef TX_KICK_RING_USING_POLLING
 				if(timer_pending(&cp->tx_ring_active_polling_timer))
-					timer_delete(&cp->tx_ring_active_polling_timer);	
+					timer_delete(&cp->tx_ring_active_polling_timer);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 				init_timer(&cp->tx_ring_active_polling_timer);
 				cp->tx_ring_active_polling_timer.data = cp;
@@ -6417,10 +6454,10 @@ static int re8670_open (struct net_device *dev)
 	for(gmac=0 ; gmac<MAX_GMAC_NUM ; gmac++)
 	{
 		cp = root_cp->re_private_data_ptr[gmac];
-		
+
 		if(cp->gmac_enabled != GMAC_TRUE)
 			continue;
-		
+
 		cp->eth_close = GMAC_FALSE;
 	}
 #ifdef CONFIG_AUTO_DHCP_CHECK
@@ -6443,7 +6480,7 @@ static int re8670_open (struct net_device *dev)
 
 	return 0;
 
-err_out_hw:	
+err_out_hw:
 	return rc;
 }
 
@@ -6453,7 +6490,7 @@ static int re8670_close (struct net_device *dev)
 	struct re_private 	   *cp;
 	unsigned int gmac;
 
-	dev_num--;	
+	dev_num--;
 
 	if(dev_num == 0)
 	{
@@ -6461,14 +6498,14 @@ static int re8670_close (struct net_device *dev)
 		for(gmac=0 ; gmac<MAX_GMAC_NUM ; gmac++)
 		{
 			cp = root_cp->re_private_data_ptr[gmac];
-			if(cp->gmac_enabled == GMAC_TRUE) 
-			{			
+			if(cp->gmac_enabled == GMAC_TRUE)
+			{
 				cp->eth_close = GMAC_TRUE;
 				re8670_stop_hw(cp);
 
 				printk(KERN_CONT "%s %d irq=%d name=%s\n", __func__, __LINE__, cp->irq, root_cp->dev->name);
 				irq_set_affinity_hint(cp->irq, NULL);
-				free_irq(cp->irq, cp);	
+				free_irq(cp->irq, cp);
 #ifdef RX_NAPI_MODE
 				//netif_napi_add(root_cp->dev, &cp->napi, re8670_poll, cp->napi_budget);
 				napi_disable(&cp->napi);
@@ -6479,10 +6516,10 @@ static int re8670_close (struct net_device *dev)
 			}
 		}
 	}
-#ifdef CONFIG_AUTO_DHCP_CHECK	
+#ifdef CONFIG_AUTO_DHCP_CHECK
 	cp = root_cp->re_private_data_ptr[0];
-	if(cp->gmac_enabled == GMAC_TRUE) 
-	{		
+	if(cp->gmac_enabled == GMAC_TRUE)
+	{
 		int num = 0;
 		struct net_device *dev_tmp = NULL;
 
@@ -6496,7 +6533,7 @@ static int re8670_close (struct net_device *dev)
 			}
 		}
 	}
-#endif	
+#endif
 	if (netif_msg_ifdown(root_cp))
 		printk(KERN_DEBUG "%s: disabling interface\n", dev->name);
 
@@ -6529,13 +6566,13 @@ static ssize_t dbg_level_write(struct file *filp, const char __user *buf, size_t
 	static struct re_private *data;
 	unsigned int gmac;
 	unsigned char tmpBuf[16] = {0};
-	int len = (count > 15) ? 15 : count;	
+	int len = (count > 15) ? 15 : count;
 	data=pde_data(file_inode(filp));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
 		return 0;
 	}
-	
+
 	gmac = data->gmac;
 	if (buf && !copy_from_user(tmpBuf, buf, len))
 	{
@@ -6551,13 +6588,13 @@ static ssize_t dbg_times_write(struct file *filp, const char __user *buf, size_t
 	static struct re_private *data;
 	unsigned int gmac;
 	unsigned char tmpBuf[16] = {0};
-	int len = (count > 15) ? 15 : count;	
+	int len = (count > 15) ? 15 : count;
 	data=pde_data(file_inode(filp));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
 		return 0;
 	}
-	
+
 	gmac = data->gmac;
 	if (buf && !copy_from_user(tmpBuf, buf, len))
 	{
@@ -6745,7 +6782,7 @@ errout:
 #ifdef CONFIG_RTL8686_SWITCH
 #ifndef CONFIG_RTK_L34_ENABLE
 static int switch_mode_read(struct seq_file *seq, void *v)
-{	  
+{
 	  switch(SWITCH_MODE)
 	  {
 		case RTL8686_Switch_Mode_Trap2Cpu:
@@ -6756,14 +6793,14 @@ static int switch_mode_read(struct seq_file *seq, void *v)
 			break;
 		default:
 			printk(KERN_CONT "Asic switch mode : Unknown\n");
-	  }      
+	  }
       return 0;
 }
 static int switch_control_set_mode(int mode)
 {
 	if( mode!=RTL8686_Switch_Mode_Trap2Cpu
 		&& mode!=RTL8686_Switch_Mode_Normal)
-		return -1;	
+		return -1;
 	SWITCH_MODE = mode;
 	return 0;
 }
@@ -6772,23 +6809,23 @@ static int switch_normal(void)
 {
 	int ret = RT_ERR_FAILED;
 	rtk_acl_ingress_entry_t aclRule;
-	memset(&aclRule, 0, sizeof(rtk_acl_ingress_entry_t)); 
-    aclRule.index = 0;	
+	memset(&aclRule, 0, sizeof(rtk_acl_ingress_entry_t));
+    aclRule.index = 0;
 	if((ret = rtk_acl_igrRuleEntry_del(aclRule.index))!= RT_ERR_OK)
 	{
 		printk(KERN_CONT "%s-%d error rtk_acl_igrRuleEntry_del index %d\n",__func__,__LINE__,aclRule.index);
-		return ret; 	
+		return ret;
 	}
 	return 0;
 }
 static int switch_trap2cpu(void)
 {
 	int ret = RT_ERR_FAILED;
-	rtk_acl_ingress_entry_t aclRule;	
+	rtk_acl_ingress_entry_t aclRule;
 	unsigned int port;
-	memset(&aclRule, 0, sizeof(rtk_acl_ingress_entry_t)); 
+	memset(&aclRule, 0, sizeof(rtk_acl_ingress_entry_t));
 	//default set to acl index 0, if set trap2cpu
-    aclRule.index = 0;	
+    aclRule.index = 0;
     aclRule.templateIdx = 0;
 	//aclRule.activePorts.bits[0] = 1 << 0; /* port 0*/
    	for(port=0;port < SWITCH_PORT_NUM ; port ++)
@@ -6796,13 +6833,13 @@ static int switch_trap2cpu(void)
 	aclRule.valid = PADDING_ENABLED;
 	aclRule.act.enableAct[ACL_IGR_FORWARD_ACT]= PADDING_ENABLED;
 	aclRule.act.forwardAct.act = ACL_IGR_FORWARD_TRAP_ACT;
-	if((ret = rtk_acl_igrRuleEntry_add(&aclRule))!= RT_ERR_OK) 
+	if((ret = rtk_acl_igrRuleEntry_add(&aclRule))!= RT_ERR_OK)
 	{
 		printk(KERN_CONT "%s-%d error rtk_acl_igrRuleEntry_add index %d\n",__func__,__LINE__,aclRule.index);
-		return ret; 
+		return ret;
 	}
    	for(port=0;port < SWITCH_PORT_NUM ; port ++)
-   	{ 
+	{
 		rtk_acl_igrState_set(port,PADDING_ENABLED);
 	}
 	return 0;
@@ -6810,7 +6847,7 @@ static int switch_trap2cpu(void)
 static ssize_t switch_mode_write(struct file *filp, const char __user *buf, size_t count, loff_t *offp )
 {
 	char 	tmpbuf[512];
-	char		*strptr;	
+	char		*strptr;
 	int retval = -1;
 	static struct re_private *data;
 	unsigned int gmac;
@@ -6820,7 +6857,7 @@ static ssize_t switch_mode_write(struct file *filp, const char __user *buf, size
 		return 0;
 	}
 
-	gmac = data->gmac;	
+	gmac = data->gmac;
 	if (buf && !copy_from_user(tmpbuf, buf, count))
 	{
 		tmpbuf[count] = '\0';
@@ -6834,25 +6871,7 @@ static ssize_t switch_mode_write(struct file *filp, const char __user *buf, size
 			retval = switch_control_set_mode(RTL8686_Switch_Mode_Trap2Cpu);
 			vlan_detag(gmac, GMAC_ON);
 			retval = switch_trap2cpu();
-#ifdef CONFIG_RTL_MULTI_LAN_DEV			
-			change_dev_port_mapping(LAN_PORT1,"eth0.2");
-			change_dev_port_mapping(LAN_PORT2,"eth0.3");
-			change_dev_port_mapping(LAN_PORT3,"eth0.4");
-			change_dev_port_mapping(LAN_PORT4,"eth0.5");
-			change_dev_port_mapping(LAN_PORT5,"eth0.6");
-			change_dev_port_mapping(LAN_PORT6,"eth0.7");
-			change_dev_port_mapping(WAN_PORT,"nas0");						
-			#if defined(CONFIG_RTL_MULTI_PHY_ETH_WAN)
-			change_dev_port_mapping(LAN_PORT6,"ifprobe");
-			#endif
-#endif						
-		}
-		else if(strncmp(strptr, "normal",6) == 0)
-		{
-			retval = switch_control_set_mode(RTL8686_Switch_Mode_Normal);
-			vlan_detag(gmac, GMAC_OFF);
-			retval = switch_normal();
-#ifdef CONFIG_RTL_MULTI_LAN_DEV			
+#ifdef CONFIG_RTL_MULTI_LAN_DEV
 			change_dev_port_mapping(LAN_PORT1,"eth0.2");
 			change_dev_port_mapping(LAN_PORT2,"eth0.3");
 			change_dev_port_mapping(LAN_PORT3,"eth0.4");
@@ -6863,7 +6882,25 @@ static ssize_t switch_mode_write(struct file *filp, const char __user *buf, size
 			#if defined(CONFIG_RTL_MULTI_PHY_ETH_WAN)
 			change_dev_port_mapping(LAN_PORT6,"ifprobe");
 			#endif
-#endif	
+#endif
+		}
+		else if(strncmp(strptr, "normal",6) == 0)
+		{
+			retval = switch_control_set_mode(RTL8686_Switch_Mode_Normal);
+			vlan_detag(gmac, GMAC_OFF);
+			retval = switch_normal();
+#ifdef CONFIG_RTL_MULTI_LAN_DEV
+			change_dev_port_mapping(LAN_PORT1,"eth0.2");
+			change_dev_port_mapping(LAN_PORT2,"eth0.3");
+			change_dev_port_mapping(LAN_PORT3,"eth0.4");
+			change_dev_port_mapping(LAN_PORT4,"eth0.5");
+			change_dev_port_mapping(LAN_PORT5,"eth0.6");
+			change_dev_port_mapping(LAN_PORT6,"eth0.7");
+			change_dev_port_mapping(WAN_PORT,"nas0");
+			#if defined(CONFIG_RTL_MULTI_PHY_ETH_WAN)
+			change_dev_port_mapping(LAN_PORT6,"ifprobe");
+			#endif
+#endif
 		}
 		else
 		{
@@ -6917,7 +6954,7 @@ static u32 rtl_ethtool_get_port_link(struct net_device *dev)
 		if(txportmask & (1 << portnum))
 			break;
 	}
-		
+
 	if(rtk_port_link_get(portnum, &LinkStatus) != RT_ERR_OK){
 		printk(KERN_CONT "\n %s %d\n", __FUNCTION__, __LINE__);
 	}
@@ -6939,7 +6976,7 @@ static int rtl_ethtool_get_settings(struct net_device *dev, struct ethtool_cmd *
     rtk_port_duplex_t linkDuplex;
 	u32 txportmask = DEVPRIV(dev)->txPortMask;
 	unsigned int portnum;
-	
+
 	if (0 == txportmask)
 		return 1;
 
@@ -6962,7 +6999,7 @@ static int rtl_ethtool_get_settings(struct net_device *dev, struct ethtool_cmd *
 	else
 		ecmd->speed = SPEED_1000;
 	ecmd->duplex = linkDuplex;
-	return 0;	
+	return 0;
 }
 
 static int rtl_ethtool_set_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
@@ -6979,10 +7016,10 @@ static int rtl_ethtool_set_settings(struct net_device *dev, struct ethtool_cmd *
 		if(txportmask & (1 << portnum))
 			break;
 	}
-	
+
 	if (portnum >= SW_PORT_NUM)
 		return -EINVAL;
-	
+
 	memset(&ability, 0, sizeof(rtk_port_phy_ability_t));
 
 	if (ecmd->autoneg)
@@ -7008,7 +7045,7 @@ static int rtl_ethtool_set_settings(struct net_device *dev, struct ethtool_cmd *
 	}
 
 	rtk_port_phyAutoNegoAbility_set(portnum, &ability);
-	
+
 	return 0;
 }
 #endif
@@ -7092,7 +7129,7 @@ static void rtl_ethtool_update_stats(struct net_device *dev, struct rtl_ethtool_
 #endif
 	int i;
 #endif
-	
+
 	unsigned long flags;
 
 	spin_lock_irqsave(&root_cp->stats_lock, flags);
@@ -7120,7 +7157,7 @@ static void rtl_ethtool_update_stats(struct net_device *dev, struct rtl_ethtool_
 					rtl_stats_p->txbytecount_lo = pPortCntrs.ifOutOctets;
 					rtl_stats_p->txucpktcnt = pPortCntrs.ifOutUcastPkts;
 					rtl_stats_p->txmcfrmcnt = pPortCntrs.ifOutMulticastPkts;
-					rtl_stats_p->txbcfrmcnt = pPortCntrs.ifOutBrocastPkts;	
+					rtl_stats_p->txbcfrmcnt = pPortCntrs.ifOutBrocastPkts;
 					rtl_stats_p->txpausefrmcnt = pPortCntrs.dot3OutPauseFrames;
 					rtl_stats_p->rxpausefrmcnt = pPortCntrs.dot3InPauseFrames;
 					rtl_stats_p->txcrcerrfrmcnt = pPortCntrs.ifOutDiscards;
@@ -7179,7 +7216,7 @@ static void tx_int_mitigation_set(unsigned int gmac, unsigned int pkts)
 	struct re_private_root *root_cp = &re_private_data_root;
 	struct re_private *cp = root_cp->re_private_data_ptr[gmac];
 	unsigned int value, mask;
-	
+
 	if(!pkts) {
 		printk(KERN_CONT "%s %d ERROR ! pkts is NULL\n", __func__, __LINE__);
 		return;
@@ -7220,7 +7257,7 @@ static void tx_int_mitigation_timer_set(unsigned int gmac, unsigned int tus)
 	struct re_private_root *root_cp = &re_private_data_root;
 	struct re_private *cp = root_cp->re_private_data_ptr[gmac];
 	unsigned int value, mask;
-	
+
 	if(tus<0x0 || tus>0xf) {
 		printk(KERN_CONT "%s %d ERROR ! No such case tus=0x%x\n", __func__, __LINE__, tus);
 		return;
@@ -7241,7 +7278,7 @@ static int misc_read(struct file *filp, char *buf, size_t count, loff_t *offp )
 {
 	static struct re_private *data;
 	unsigned int rx_ring_idx;
-	
+
 	data=pde_data(file_inode(filp));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
@@ -7443,7 +7480,7 @@ void send_test_packet_out_1(struct re_private *cp)
 	struct sk_buff *test_skb = NULL;
 	struct tx_info txInfo, txInfoMask;
 	u32 len = 66;
-	struct net_device *dev;	
+	struct net_device *dev;
 	int i, j;
 
 	cp->test_packet[0] = 0xe8;cp->test_packet[1] = 0x9d;cp->test_packet[2] = 0x87;cp->test_packet[3] = 0x9b;
@@ -7479,7 +7516,7 @@ void send_test_packet_out_1(struct re_private *cp)
     if(!test_skb) {
 		//spin_unlock_irqrestore(&test_lock, flags);
         printk(KERN_CONT "%s:%d allocte skb for jumbo frame fail\n", __FILE__, __LINE__);
-		return;			
+		return;
     }
 	test_skb->dev = dev;
     skb_put(test_skb, len);
@@ -7507,7 +7544,7 @@ void send_test_packet_out_2(struct re_private *cp)
 	{
 		cp->test_packet[j] = 0xbb;
 	}
-	
+
 	dev = dev_get_by_name(&init_net,"eth0.4");
 	if(dev==NULL)
 	{
@@ -7517,7 +7554,7 @@ void send_test_packet_out_2(struct re_private *cp)
 	test_skb = dev_alloc_skb(JUMBO_SKB_BUF_SIZE);
     if(!test_skb) {
         printk(KERN_CONT "%s:%d allocte skb for jumbo frame fail\n", __FILE__, __LINE__);
-		return;			
+		return;
     }
 	test_skb->dev = dev;
     skb_put(test_skb, len);
@@ -7545,7 +7582,7 @@ void send_test_packet_out_3(struct re_private *cp)
 	{
 		cp->test_packet[j] = 0xcc;
 	}
-	
+
 	dev = dev_get_by_name(&init_net,"eth0.4");
 	if(dev==NULL)
 	{
@@ -7555,7 +7592,7 @@ void send_test_packet_out_3(struct re_private *cp)
 	test_skb = dev_alloc_skb(JUMBO_SKB_BUF_SIZE);
     if(!test_skb) {
         printk(KERN_CONT "%s:%d allocte skb for jumbo frame fail\n", __FILE__, __LINE__);
-		return;			
+		return;
     }
 	test_skb->dev = dev;
     skb_put(test_skb, len);
@@ -7613,7 +7650,7 @@ static ssize_t misc_write(struct file *filp, const char __user *buf, size_t coun
 		{
 			goto errout;
 		}
-		
+
 		for(i=0;strlen(var_name[i])&&pVar[i];i++){
 			if(!memcmp(var, var_name[i], strlen(var_name[i]))){
 				if(!strcmp(var, "tx_jumbo_frame_enabled"))
@@ -7661,12 +7698,12 @@ static ssize_t misc_write(struct file *filp, const char __user *buf, size_t coun
 				}
 #endif
 #ifdef TX_INTR_HANDLE
-				else if(!strcmp(var, "tx_mit")) 
+				else if(!strcmp(var, "tx_mit"))
 				{
 					value = simple_strtol(tokptr, NULL, 0);
 					*pVar[i] = value;
 					tx_int_mitigation_set(gmac, value);
-				} else if(!strcmp(var, "tx_mit_timer")) 
+				} else if(!strcmp(var, "tx_mit_timer"))
 				{
 					value = simple_strtol(tokptr, NULL, 0);
 					*pVar[i] = value;
@@ -7674,9 +7711,9 @@ static ssize_t misc_write(struct file *filp, const char __user *buf, size_t coun
 				}
 #endif
 #ifdef TX_CREATE_TEST_PACKET_DEBUG
-				else if(!strcmp(var, "tx_packet_test")) 
+				else if(!strcmp(var, "tx_packet_test"))
 				{
-					value = simple_strtol(tokptr, NULL, 0);					
+					value = simple_strtol(tokptr, NULL, 0);
 					if(value == 1)
 					{
 						*pVar[i] = value;
@@ -7771,13 +7808,13 @@ static int dev_port_mapping_read(struct seq_file *m, void *v)
 	unsigned int i;
 	unsigned int totalDev = TOTAL_RTL8686_DEV_NUM;
 	struct file *file = m->private;
-	
+
 	data=pde_data(file_inode(file));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
 		return 0;
 	}
-	
+
 	seq_printf(m, "WAN PORT %d, CPU PORT %d\n", WAN_PORT, data->gmac_cpu_port);
 	seq_printf(m, "DEV ability: ");
 	for(i=0;i<totalDev;i++){
@@ -7817,10 +7854,10 @@ static ssize_t dev_port_mapping_write(struct file *filp, const char __user *buf,
 	unsigned int port_num;//, i;
 	char		*tokptr;
 	unsigned long buf_size;
-	
+
 	buf_size = min(count, (sizeof(tmpbuf)-1));
 	if (buf && !copy_from_user(tmpbuf, buf, buf_size)) {
-	
+
 		tmpbuf[count] = '\0';
 
 		if (!str_valid(tmpbuf))
@@ -7852,7 +7889,7 @@ errout:
 		printk(KERN_CONT "tx_force_gmac GMAC0/GMAC1/GMAC2 \n");
 		return -EFAULT;
 	}
-		
+
 	return count;
 }
 
@@ -7860,7 +7897,7 @@ static int change_dev_tx_port_mask(int port_num, char* name, int index)
 {
 	if(strcmp(name, "eth0")){
 		DEVPRIV(rtl8686_dev_table[index].dev_instant)->txPortMask = 1 << port_num;
-		//printk("%s -> 0x%x\n", 
+		//printk("%s -> 0x%x\n",
 			//rtl8686_dev_table[index].dev_instant->name, DEVPRIV(rtl8686_dev_table[index].dev_instant)->txPortMask);
 	}
 	return 0;
@@ -7874,16 +7911,16 @@ static int change_dev_port_mapping(int port_num, char* name)
 	unsigned int totalDev = TOTAL_RTL8686_DEV_NUM;
 	struct net_device *dev = NULL;
 	unsigned int gmac;
-	char* dev_name;	
+	char* dev_name;
 	int i;
-	
+
 	for(i=0;i<totalDev;i++){
 
 		if(i == 0)
 		{
 			continue;
 		}
-		
+
 		if(rtl8686_dev_table[i].dev_instant)
 		{
 			dev_name = rtl8686_dev_table[i].dev_instant->name;
@@ -7893,35 +7930,35 @@ static int change_dev_port_mapping(int port_num, char* name)
 		{
 			printk(KERN_CONT "no dev_instant, strange.......\n");
 			dev_name = rtl8686_dev_table[i].ifname;
-		}		
+		}
 		if(!strcmp(dev_name, name)){
 			for(gmac=0;gmac<MAX_GMAC_NUM;gmac++) {
 
 				cp = root_cp->re_private_data_ptr[gmac];
-				
+
 				if(cp->gmac_enabled != GMAC_TRUE)
-					continue;	
-				
+					continue;
+
 				cp->port2dev[port_num] = rtl8686_dev_table[i].dev_instant;
 			}
 			change_dev_tx_port_mask(port_num, name, i);
 			break;
 		}
 	}
-	
+
 	if(i == totalDev){
 		printk(KERN_CONT "can't find dev %s\n", name);
 		return -1;
 	}
-	
-#ifdef CONFIG_RTL8686_SWITCH 
+
+#ifdef CONFIG_RTL8686_SWITCH
 	if(port_num < SW_PORT_NUM && port_num >= 0 && dev )
 	{
 		LCDev_mapping[port_num].phy_dev = dev;
 		strcpy(LCDev_mapping[port_num].ifname,dev->name);
 	}
 #endif
-	
+
 	return 0;
 }
 
@@ -7989,7 +8026,7 @@ static int port_to_rxfunc_read(struct file *filp, char *buf, size_t count, loff_
 		printk(KERN_INFO "Null data");
 		return 0;
 	}
-	
+
 	//default set to eth0
 	for(i=0;i<totalPortTable;i++){
 		printk(KERN_CONT "port%d -> 0x%p\n", i, data->port2rxfunc[i]);
@@ -8006,10 +8043,10 @@ static int port_to_rxfunc_read(struct file *filp, char *buf, size_t count, loff_
 static ssize_t port_to_rxfunc_write(struct file *filp, const char __user *buf, size_t count, loff_t *offp )
 {
 	char 	tmpbuf[512];
-	char		*strptr;	
+	char		*strptr;
 	//int retval = -1, i;
 	static struct re_private *data;
-	
+
 	data=pde_data(file_inode(filp));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
@@ -8030,7 +8067,7 @@ static ssize_t port_to_rxfunc_write(struct file *filp, const char __user *buf, s
 			re8686_register_rxfunc_all_port(&fwdEngine_rx_skb);
 			printk(KERN_CONT "force NIC Rx hook to RG only!\n");
 		}
-		else 
+		else
 #endif
 		if(strncmp(strptr, "force2nf", 8) == 0)
 		{
@@ -8054,7 +8091,7 @@ errout:
 	return count;
 }
 
-int dbg_level_read(struct file *filp, char *buf, size_t count, loff_t *offp ) 
+int dbg_level_read(struct file *filp, char *buf, size_t count, loff_t *offp )
 {
 	static struct re_private *data;
 	unsigned int gmac;
@@ -8063,7 +8100,7 @@ int dbg_level_read(struct file *filp, char *buf, size_t count, loff_t *offp )
 		printk(KERN_INFO "Null data");
 		return 0;
 	}
-	
+
 	gmac = data->gmac;
 	printk(KERN_CONT "[debug_enable = 0x%08x]\n", data->debug_enable);
 	printk(KERN_CONT "RTL8686_PRINT_NOTHING\t0x%08x\n", RTL8686_PRINT_NOTHING);
@@ -8076,11 +8113,11 @@ int dbg_level_read(struct file *filp, char *buf, size_t count, loff_t *offp )
 	printk(KERN_CONT "RTL8686_RX_WARN\t\t0x%08x\n", RTL8686_RX_WARN);
 	printk(KERN_CONT "RTL8686_TX_WARN\t\t0x%08x\n", RTL8686_TX_WARN);
 	printk(KERN_CONT "RTL8686_OTHERS\t\t0x%08x\n", RTL8686_OTHERS);
-	
+
 	return 0;
 }
 
-int dbg_times_read(struct file *filp, char *buf, size_t count, loff_t *offp ) 
+int dbg_times_read(struct file *filp, char *buf, size_t count, loff_t *offp )
 {
 	static struct re_private *data;
 	unsigned int gmac;
@@ -8089,10 +8126,10 @@ int dbg_times_read(struct file *filp, char *buf, size_t count, loff_t *offp )
 		printk(KERN_INFO "Null data");
 		return 0;
 	}
-	
+
 	gmac = data->gmac;
 	printk(KERN_CONT "[debug_times = %d times]\n", data->debug_times);
-	
+
 	return 0;
 }
 
@@ -8109,10 +8146,10 @@ static int hwreg_read(struct file *filp, char *buf, size_t count, loff_t *offp )
 
 	gmac = data->gmac;
 	printk(KERN_CONT "ETHBASE		=0x%08x\n", data->base);
-	printk(KERN_CONT "IDR		=%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x\n", 
+	printk(KERN_CONT "IDR		=%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x\n",
 		RLE0787_R8(gmac, IDR0), RLE0787_R8(gmac, IDR1), RLE0787_R8(gmac, IDR2), RLE0787_R8(gmac, IDR3), RLE0787_R8(gmac, IDR4), RLE0787_R8(gmac, IDR5));
-	printk(KERN_CONT "MAR		=%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x\n", 
-		RLE0787_R8(gmac, MAR0), RLE0787_R8(gmac, MAR1), RLE0787_R8(gmac, MAR2), RLE0787_R8(gmac, MAR3), 
+	printk(KERN_CONT "MAR		=%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x\n",
+		RLE0787_R8(gmac, MAR0), RLE0787_R8(gmac, MAR1), RLE0787_R8(gmac, MAR2), RLE0787_R8(gmac, MAR3),
 		RLE0787_R8(gmac, MAR4), RLE0787_R8(gmac, MAR5), RLE0787_R8(gmac, MAR6), RLE0787_R8(gmac, MAR7));
 	printk(KERN_CONT "TXOKCNT		=0x%04x		RXOKCNT		=0x%04x\n", RLE0787_R16(gmac, TXOKCNT), RLE0787_R16(gmac, RXOKCNT));
 	printk(KERN_CONT "TXERR		=0x%04x		RXERRR		=0x%04x\n", RLE0787_R16(gmac, TXERR), RLE0787_R16(gmac, RXERRR));
@@ -8141,9 +8178,9 @@ static int hwreg_read(struct file *filp, char *buf, size_t count, loff_t *offp )
 		{
 			printk(KERN_CONT "RxRingSize%d	=0x%04x\n", i, RLE0787_R16(gmac, RxRingSize));
 			printk(KERN_CONT "RxFDP%d		=0x%08x	RxCDO%d		=0x%04x\n",i,RLE0787_R32(gmac, RxFDP), i, RLE0787_R16(gmac, RxCDO));
-			printk(KERN_CONT "EthrntRxCPU_Des_Num	=0x%02x	EthrntRxCPU_Des_Wrap	=0x%02x\n", 
+			printk(KERN_CONT "EthrntRxCPU_Des_Num	=0x%02x	EthrntRxCPU_Des_Wrap	=0x%02x\n",
 				RLE0787_R8(gmac, EthrntRxCPU_Des_Num), RLE0787_R8(gmac, EthrntRxCPU_Des_Wrap));
-			printk(KERN_CONT "Rx_Pse_Des_Thres	=0x%02x	EthrntRxCPU_Des_Num_h	=0x%02x\n", 
+			printk(KERN_CONT "Rx_Pse_Des_Thres	=0x%02x	EthrntRxCPU_Des_Num_h	=0x%02x\n",
 				RLE0787_R8(gmac, Rx_Pse_Des_Thres), RLE0787_R8(gmac, EthrntRxCPU_Des_Num_h));
 			printk(KERN_CONT "Rx_Pse_Des_Thres_h	=0x%02x\n", RLE0787_R8(gmac, Rx_Pse_Des_Thres_h));
 		}
@@ -8152,8 +8189,8 @@ static int hwreg_read(struct file *filp, char *buf, size_t count, loff_t *offp )
 		{
 			printk(KERN_CONT "RxRingSize%d	=0x%04x\n", i, RLE0787_R16(gmac, RxRingSize2+(ADDR_OFFSET*(i-1))));
 			printk(KERN_CONT "RxFDP%d		=0x%08x	RxCDO%d		=0x%04x\n",i,RLE0787_R32(gmac, RxFDP2+(ADDR_OFFSET*(i-1))),i,RLE0787_R16(gmac, RxCDO2+(ADDR_OFFSET*(i-1))));
-			printk(KERN_CONT "RxCPU_Des_Num%d	=0x%08x	RxCPU_Des_Thres%d=0x%08x\n", 
-				i, RLE0787_R32(gmac, EthrntRxCPU_Des_Num2+(ADDR_OFFSET*(i-1))), 
+			printk(KERN_CONT "RxCPU_Des_Num%d	=0x%08x	RxCPU_Des_Thres%d=0x%08x\n",
+				i, RLE0787_R32(gmac, EthrntRxCPU_Des_Num2+(ADDR_OFFSET*(i-1))),
 				i, RLE0787_R32(gmac, EthrntRxCPU_Des_Wrap2+(ADDR_OFFSET*(i-1))));
 		}
 #endif
@@ -8218,7 +8255,7 @@ static int sw_cnt_seq_read(struct seq_file *m, void *v)
 	struct file *file = m->private;
 	int len = 0, i;
 	u32 tx_hw_num=0;
-	
+
 	data=pde_data(file_inode(file));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
@@ -8257,7 +8294,7 @@ static int sw_cnt_seq_read(struct seq_file *m, void *v)
 	seq_printf(m, "%-24s:%14d          %-24s:%14d\n",
 		"top_eth_skb_alloc_num", (MAX_ETH_SKB_NUM-lowest_eth_skb_free_num), "cri_eth_skb_free_num", critical_eth_skb_free_num);
 #else
-	seq_printf(m, "%-24s:%14d\n", 
+	seq_printf(m, "%-24s:%14d\n",
 		"nic_prealloc_threshold", RE8670_MAX_ALLOC_RXSKB_NUM);
 #endif
 #ifdef RX_NAPI_MODE
@@ -8272,7 +8309,7 @@ static int sw_cnt_seq_read(struct seq_file *m, void *v)
 			seq_printf(m, "	napi_statistic[%d]=%d\n", i, napi_statistic[i]);
 			total_packet_cnt = total_packet_cnt + napi_statistic[i];
 		}
-	}	
+	}
 	seq_printf(m, "	total_poll_and_interrupt=%llu\n", total_packet_cnt);
 	seq_printf(m, "%-24s:%14d          %-24s:%14d\n",
 		"rx_napi_gro_normal", data->cp_stats.rx_napi_gro_normal, "rx_napi_gro_drop", data->cp_stats.rx_napi_gro_drop);
@@ -8328,7 +8365,7 @@ static int sw_cnt_seq_read(struct seq_file *m, void *v)
 static ssize_t sw_cnt_write(struct file *filp, const char __user *buf, size_t count, loff_t *offp )
 {
 	char 	tmpbuf[512];
-	char		*strptr;	
+	char		*strptr;
 	int i;
 	//int retval = -1, i;
 	static struct re_private *data;
@@ -8363,7 +8400,7 @@ static ssize_t sw_cnt_write(struct file *filp, const char __user *buf, size_t co
 #if defined(CONFIG_RTL865X_ETH_PRIV_SKB)
 			lowest_eth_skb_free_num = MAX_ETH_SKB_NUM;
 			dynamic_alloc_skb_num = 0;
-#endif	
+#endif
 			printk(KERN_CONT "all software counter cleared !\n");
 		}
 		else if(strncmp(strptr, "rx_hw_num", 9) == 0 || strncmp(strptr, "2", 1) == 0)
@@ -8614,12 +8651,12 @@ static ssize_t rx_ring_write(struct file *filp, const char __user *buf, size_t c
 			ring_num=simple_strtol(tokptr, NULL, 0);
 			if(ring_num>=MAX_RXRING_NUM)
 			{
-				goto errout;	
+				goto errout;
 			}
 			tokptr = strsep(&strptr," ");
 			if (tokptr==NULL)
 			{
-				goto errout;	
+				goto errout;
 			}
 			fc_enabled=simple_strtol(tokptr, NULL, 0);
 			if(fc_enabled != 0 && fc_enabled != 1)
@@ -8634,7 +8671,7 @@ static ssize_t rx_ring_write(struct file *filp, const char __user *buf, size_t c
 		{
 			goto errout;
 		}
-		else 
+		else
 		{
 			data->rx_ring_show_bitmap = simple_strtol(tokptr, NULL, 0);
 			printk(KERN_CONT "\r\nrx_ring_show_bitmap 0x%08x \n", data->rx_ring_show_bitmap);
@@ -8657,7 +8694,7 @@ show_fc_result:
 }
 #if defined(CONFIG_RTL9607C_SERIES) && defined(HWNAT_CUSTOMIZE)
 void rtk_dynamic_sram_state_set(rtk_enable_t state)
-{	
+{
 	if(state==ENABLED)
 		REG32(0xb8000204) |= 1; // SRAM CLK on
 	else
@@ -8668,7 +8705,7 @@ void rtk_dynamic_sram_state_set(rtk_enable_t state)
 	return;
 }
 void rtk_dynamic_reset_to_dram_mode(void)
-{	
+{
 	int i ;
 	uint32 state_map, state_unmap;
 	uint32 basedAddr_map, basedAddr_unmap;
@@ -8678,23 +8715,23 @@ void rtk_dynamic_reset_to_dram_mode(void)
 	{
 		if((i == 0 && previous_dynamic_sram_desc ==1))
 		{
-			
+
 			uint32 tmpBuff, tmpBuff1;
-			
+
 			//cache invalid
 			dma_cache_wback_inv((u32)dynamic_mapping_buffer[0], sramSizeMappingArray[RTK_DYNAMIC_SRAM_32K_BYTES]);
 			dma_cache_wback_inv((u32)dynamic_mapping_buffer[1], sramSizeMappingArray[RTK_DYNAMIC_SRAM_8K_BYTES]);
-			
+
 			//mdelay(10);
-			
+
 			memset(0, UNCACHE_ADDR((unsigned long)dynamic_mapping_buffer[0]), sramSizeMappingArray[RTK_DYNAMIC_SRAM_32K_BYTES]);
 			memset(0, UNCACHE_ADDR((unsigned long)dynamic_mapping_buffer[1]), sramSizeMappingArray[RTK_DYNAMIC_SRAM_8K_BYTES]);
 			memcpy(&tmpBuff, UNCACHE_ADDR(dynamic_mapping_buffer[0]), sramSizeMappingArray[RTK_DYNAMIC_SRAM_32K_BYTES]);
-			memcpy(&tmpBuff1, UNCACHE_ADDR(dynamic_mapping_buffer[1]), sramSizeMappingArray[RTK_DYNAMIC_SRAM_8K_BYTES]);	
-			
+			memcpy(&tmpBuff1, UNCACHE_ADDR(dynamic_mapping_buffer[1]), sramSizeMappingArray[RTK_DYNAMIC_SRAM_8K_BYTES]);
+
 			state_map = 0;
 			state_map = REG32(0xb8004000 + (0x10*i));
-			REG32(0xb8004000 + (0x10*i))= (state_map&0xfffffffe); 
+			REG32(0xb8004000 + (0x10*i))= (state_map&0xfffffffe);
 			mdelay(10);
 			//copy original from dram to sram
 			memcpy(UNCACHE_ADDR(dynamic_mapping_buffer[0]), &tmpBuff, sramSizeMappingArray[RTK_DYNAMIC_SRAM_32K_BYTES]);
@@ -8702,15 +8739,15 @@ void rtk_dynamic_reset_to_dram_mode(void)
 
 
 			//rtk_dynamic_sram_set(1, TRUE, dynamic_mapping_buffer[1], RTK_DYNAMIC_SRAM_8K_BYTES, sramSizeMappingArray[RTK_DYNAMIC_SRAM_32K_BYTES]);
-			
-		
+
+
 		}
 		else
 		{
-		
+
 			state_map = 0;
 			state_map = REG32(0xb8004000 + (0x10*i));
-			REG32(0xb8004000 + (0x10*i))= (state_map&0xfffffffe); 
+			REG32(0xb8004000 + (0x10*i))= (state_map&0xfffffffe);
 
 		}
 	}
@@ -8720,7 +8757,7 @@ void rtk_dynamic_reset_to_dram_mode(void)
 		printk(KERN_CONT "\033[1;33;41m[WARNING] SRAM clock is off, please turn on it first\033[0m\n");
 		return;
 	}
-	
+
 	for(i = 0 ; i < 4 ; i ++)
 	{
 		REG32(0xb8001304 + (0x10*i)) = 0x8;
@@ -8728,7 +8765,7 @@ void rtk_dynamic_reset_to_dram_mode(void)
 	}
 	/*
 		Reset to default setting
-		
+
 		RTK.0> debug get soc-memory 0xb8001304
 		Memory 0xb8001304 : 0x00000008
 		RTK.0> debug get soc-memory 0xb8001314
@@ -8748,10 +8785,10 @@ void rtk_dynamic_reset_to_dram_mode(void)
 		RTK.0> debug get soc-memory 0xb8001330
 		Memory 0xb8001330 : 0x00000000
 	*/
-	
-	
+
+
 	mdelay(10);
-	
+
 	return;
 }
 
@@ -8782,7 +8819,7 @@ int rtk_dynamic_sram_set(uint32 index, uint32 state, void *addr, rtk_dynamic_sra
 	{
 		printk(KERN_CONT "\033[1;33;41m[WARNING] index[%d] is out of range(0~3) \033[0m\n", index);
 		return FALSE;
-	}	
+	}
 	if(sram_size<=RTK_DYNAMIC_SRAM_MIN_BYTES || sram_size>=RTK_DYNAMIC_SRAM_MAX_BYTES)
 	{
 		printk(KERN_CONT "\033[1;33;41m[WARNING] size is out of range(256~32K) \033[0m\n");
@@ -8802,7 +8839,7 @@ int rtk_dynamic_sram_set(uint32 index, uint32 state, void *addr, rtk_dynamic_sra
 	//cache invalid
 	dma_cache_wback_inv((u32)addr, buffSize);
 	memcpy(tmpBuff, UNCACHE_ADDR(addr), buffSize);
-	//map to sram	
+	//map to sram
 	REG32(0xb8004004 + (0x10*index)) = sram_size;
 	REG32(0xb8004008 + (0x10*index)) = offset;
 	REG32(0xb8004000 + (0x10*index)) = (basedAddr | state);
@@ -8817,7 +8854,7 @@ int rtk_dynamic_sram_set(uint32 index, uint32 state, void *addr, rtk_dynamic_sra
 
 	if(tmpBuff)
 		kfree(tmpBuff);
-	
+
 	return TRUE;
 }
 
@@ -8828,12 +8865,12 @@ int rtk_dynamic_sram_get(uint32 index, uint32 *state, uint32 *addrValue, rtk_dyn
 	uint32 basedAddr_map, basedAddr_unmap;
 	uint32 offset_map;
 	rtk_dynamic_sram_size_t sram_size_map, sram_size_unmap;
-	
+
 	if(rtk_dynamic_sram_state_get()==DISABLED)
 	{
 		printk(KERN_CONT "\033[1;33;41m[WARNING] SRAM clock is off, please turn on it first\033[0m\n");
 		return FALSE;
-	}	
+	}
 	if(index>=MAX_DYNAMIC_SRAM_SIZE)
 	{
 		printk(KERN_CONT "\033[1;33;41m[WARNING] index[%d] is out of range(0~3) \033[0m\n", index);
@@ -8853,7 +8890,7 @@ int rtk_dynamic_sram_get(uint32 index, uint32 *state, uint32 *addrValue, rtk_dyn
 	state_unmap = (REG32(0xb8001300 + (0x10*index)) & 0x1);
 	basedAddr_unmap = (REG32(0xb8001300 + (0x10*index)) & ~0x1);
 	sram_size_unmap = REG32(0xb8001304 + (0x10*index));
-		
+
 	if(state_map!=state_unmap)
 	{
 		printk(KERN_CONT "\033[1;33;41m[WARNING] Index[%d]'s state is not synchronized, state_map=%d state_unmap=%d\033[0m\n", index, state_map, state_unmap);
@@ -8869,7 +8906,7 @@ int rtk_dynamic_sram_get(uint32 index, uint32 *state, uint32 *addrValue, rtk_dyn
 			printk(KERN_CONT "\033[1;33;41m[WARNING] Index[%d]'s sram_size is not synchronized, sram_size_map=%d sram_size_unmap=%d\033[0m\n", index, sramSizeMappingArray[sram_size_map], sramSizeMappingArray[sram_size_unmap]);
 		}
 	}
-	
+
 	*state 		= state_map;
 	*addrValue	= basedAddr_map;
 	*sram_size	= sram_size_map;
@@ -8892,7 +8929,7 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 	if(dynamic_sram_desc==1) //nptv6 setting
 	{
 		rtk_dynamic_sram_state_set(ENABLED);
-		
+
 		if(gmac==0) //first enter this function
 		{
 			dynamic_mapping_buffer[0] = NULL;
@@ -8912,7 +8949,7 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 					printk(KERN_CONT "\033[1;33;41m[WARNING] Can not allocate a 32k buffer!! \033[0m\n");
 				else
 					kfree(dynamic_mapping_buffer[0]);
-				
+
 				if(dynamic_mapping_buffer[1]==NULL)
 					printk(KERN_CONT "\033[1;33;41m[WARNING] Can not allocate a 8k buffer!! \033[0m\n");
 				else
@@ -8921,7 +8958,7 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 		}
 		if(dynamic_mapping_buffer[0]==NULL || dynamic_mapping_buffer[1]==NULL)
 			return;
-		
+
 #if defined(HWNAT_CUSTOMIZE_NPTV6_SRAM_ACC_V2)
 		if(gmac==hwnat_customized_up_gmac) //gmac 1
 		{
@@ -8952,12 +8989,12 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 					pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 				}
 
-				//rx desc	
+				//rx desc
 				cp->rx_Mring[rxRingNum] = (DMA_RX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				//refill rx desc
 				for(i = 0; i < re_private_data[gmac].re8670_rx_ring_size[rxRingNum]; i++){
 					cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-					if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))		  
+					if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))
 						cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 					else
 						cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
@@ -8969,13 +9006,13 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 				cp->tx_Mhqring[txRingNum]=(DMA_TX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				pBuf += sizeof(DMA_TX_DESC)*re_private_data[gmac].re8670_tx_ring_size[txRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
-				//fs first data block		
+				//fs first data block
 				re8686_tx_ring_hdr_buffer[gmac][rxRingNum]=pBuf;
 				re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum] = (u32)pBuf | UNCACHE_MASK;
 				pBuf += MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE*re_private_data[gmac].re8670_rx_ring_size[rxRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 
-				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n", 
+				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n",
 						gmac, rxRingNum, txRingNum, cp->rx_Mring[rxRingNum], cp->tx_Mhqring[txRingNum], re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum]);
 			}
 		}
@@ -9015,13 +9052,13 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 						pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 					}
 				}
-				
-				//rx desc	
+
+				//rx desc
 				cp->rx_Mring[rxRingNum] = (DMA_RX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				//refill rx desc
 				for(i = 0; i < re_private_data[gmac].re8670_rx_ring_size[rxRingNum]; i++){
 					cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-					if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))		  
+					if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))
 						cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 					else
 						cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
@@ -9033,13 +9070,13 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 				cp->tx_Mhqring[txRingNum]=(DMA_TX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				pBuf += sizeof(DMA_TX_DESC)*re_private_data[gmac].re8670_tx_ring_size[txRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
-				//fs first data block		
+				//fs first data block
 				re8686_tx_ring_hdr_buffer[gmac][rxRingNum]=pBuf;
 				re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum] = (u32)pBuf | UNCACHE_MASK;
 				pBuf += MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE*re_private_data[gmac].re8670_rx_ring_size[rxRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 
-				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n", 
+				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n",
 						gmac, rxRingNum, txRingNum, cp->rx_Mring[rxRingNum], cp->tx_Mhqring[txRingNum], re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum]);
 			}
 		}
@@ -9061,13 +9098,13 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 					pBuf += MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE*rxRingSize;
 					pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 				}
-				
-				//rx desc	
+
+				//rx desc
 				cp->rx_Mring[rxRingNum] = (DMA_RX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				//refill rx desc
 				for(i = 0; i < re_private_data[gmac].re8670_rx_ring_size[rxRingNum]; i++){
 					cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-					if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))		  
+					if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))
 						cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 					else
 						cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
@@ -9079,17 +9116,17 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 				cp->tx_Mhqring[txRingNum]=(DMA_TX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				pBuf += sizeof(DMA_TX_DESC)*re_private_data[gmac].re8670_tx_ring_size[txRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
-				//fs first data block		
+				//fs first data block
 				re8686_tx_ring_hdr_buffer[gmac][rxRingNum]=pBuf;
 				re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum] = (u32)pBuf | UNCACHE_MASK;
 				pBuf += MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE*re_private_data[gmac].re8670_rx_ring_size[rxRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 
-				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n", 
+				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n",
 						gmac, rxRingNum, txRingNum, cp->rx_Mring[rxRingNum], cp->tx_Mhqring[txRingNum], re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum]);
 			}
 		}
-	
+
 #else
 		if(gmac==hwnat_customized_up_gmac) //gmac 1
 		{
@@ -9137,12 +9174,12 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 					}
 				}
 
-				//rx desc	
+				//rx desc
 				cp->rx_Mring[rxRingNum] = (DMA_RX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				//refill rx desc
 				for(i = 0; i < re_private_data[gmac].re8670_rx_ring_size[rxRingNum]; i++){
 					cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-					if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))		  
+					if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))
 						cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 					else
 						cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
@@ -9154,13 +9191,13 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 				cp->tx_Mhqring[txRingNum]=(DMA_TX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				pBuf += sizeof(DMA_TX_DESC)*re_private_data[gmac].re8670_tx_ring_size[txRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
-				//fs first data block		
+				//fs first data block
 				re8686_tx_ring_hdr_buffer[gmac][rxRingNum]=pBuf;
 				re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum] = (u32)pBuf | UNCACHE_MASK;
 				pBuf += MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE*re_private_data[gmac].re8670_rx_ring_size[rxRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 
-				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n", 
+				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n",
 						gmac, rxRingNum, txRingNum, cp->rx_Mring[rxRingNum], cp->tx_Mhqring[txRingNum], re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum]);
 			}
 		}
@@ -9182,13 +9219,13 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 					pBuf += MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE*rxRingSize;
 					pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 				}
-				
-				//rx desc	
+
+				//rx desc
 				cp->rx_Mring[rxRingNum] = (DMA_RX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				//refill rx desc
 				for(i = 0; i < re_private_data[gmac].re8670_rx_ring_size[rxRingNum]; i++){
 					cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-					if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))		  
+					if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))
 						cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 					else
 						cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
@@ -9200,13 +9237,13 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 				cp->tx_Mhqring[txRingNum]=(DMA_TX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				pBuf += sizeof(DMA_TX_DESC)*re_private_data[gmac].re8670_tx_ring_size[txRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
-				//fs first data block		
+				//fs first data block
 				re8686_tx_ring_hdr_buffer[gmac][rxRingNum]=pBuf;
 				re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum] = (u32)pBuf | UNCACHE_MASK;
 				pBuf += MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE*re_private_data[gmac].re8670_rx_ring_size[rxRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 
-				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n", 
+				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n",
 						gmac, rxRingNum, txRingNum, cp->rx_Mring[rxRingNum], cp->tx_Mhqring[txRingNum], re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum]);
 			}
 		}
@@ -9238,13 +9275,13 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 					pBuf += MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE*rxRingSize;
 					pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 				}
-				
-				//rx desc	
+
+				//rx desc
 				cp->rx_Mring[rxRingNum] = (DMA_RX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				//refill rx desc
 				for(i = 0; i < re_private_data[gmac].re8670_rx_ring_size[rxRingNum]; i++){
 					cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-					if (i == ( re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))		  
+					if (i == ( re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))
 						cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 					else
 						cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
@@ -9256,29 +9293,29 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 				cp->tx_Mhqring[txRingNum]=(DMA_TX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 				pBuf += sizeof(DMA_TX_DESC)* re_private_data[gmac].re8670_tx_ring_size[txRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
-				//fs first data block		
+				//fs first data block
 				re8686_tx_ring_hdr_buffer[gmac][rxRingNum]=pBuf;
 				re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum] = (u32)pBuf | UNCACHE_MASK;
 				pBuf += MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE* re_private_data[gmac].re8670_rx_ring_size[rxRingNum];
 				pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 
-				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n", 
+				printk(KERN_CONT "\033[1;33;40m [gmac %d, rxRingNum %d, txRingNum %d] cp->rx_Mring=0x%x cp->tx_Mhqring=0x%x fs_data=0x%x \033[0m\n",
 						gmac, rxRingNum, txRingNum, cp->rx_Mring[rxRingNum], cp->tx_Mhqring[txRingNum], re8686_tx_ring_hdr_buffer_sram_aligned[gmac][rxRingNum]);
 			}
 		}
-#endif		
+#endif
 	}
 	else if(dynamic_sram_desc==2) //VXLAN setting
 	{
 		rtk_dynamic_sram_state_set(ENABLED);
-		
+
 		if(gmac==hwnat_customized_up_gmac)
 		{
 			//combine rxring and txring to single 8K or 16K sram zone
 			rxRingNum=hwnat_customized_up_rx_ringNum;
 			txRingNum=hwnat_customized_up_tx_ringNum;
 			sramBlockSizeIdx=dynamic_mapping_buffer_size_idx[0];
-			
+
 			pBuf = kzalloc(sramSizeMappingArray[sramBlockSizeIdx]+(DESC_ALIGN*2), GFP_KERNEL);
 			if(!pBuf)return;
 			dynamic_mapping_buffer[0]=pBuf;
@@ -9289,13 +9326,13 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 			//refill rx desc
 			for(i = 0; i <  re_private_data[gmac].re8670_rx_ring_size[rxRingNum]; i++){
 				cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-				if (i == ( re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))		  
+				if (i == ( re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))
 					cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 				else
 					cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
 				cp->rx_Mring[rxRingNum][i].opts2 = 0;
 			}
-			
+
 			pBuf += RE8670_RXRING_BYTES( re_private_data[gmac].re8670_rx_ring_size[rxRingNum])-DESC_ALIGN;
 			pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 			cp->tx_Mhqring[txRingNum]=(DMA_TX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
@@ -9315,7 +9352,7 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 			rxRingNum=hwnat_customized_down_rx_ringNum;
 			txRingNum=hwnat_customized_down_tx_ringNum;
 			sramBlockSizeIdx=dynamic_mapping_buffer_size_idx[2];
-			
+
 			pBuf = kzalloc(sramSizeMappingArray[sramBlockSizeIdx]+(DESC_ALIGN*2), GFP_KERNEL);
 			if(!pBuf)return;
 			dynamic_mapping_buffer[2]=pBuf;
@@ -9326,18 +9363,18 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 			//refill rx desc
 			for(i = 0; i < re_private_data[gmac].re8670_rx_ring_size[rxRingNum]; i++){
 				cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-				if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))		  
+				if (i == (re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))
 					cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 				else
 					cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
 				cp->rx_Mring[rxRingNum][i].opts2 = 0;
 			}
-			
+
 			pBuf += RE8670_RXRING_BYTES(re_private_data[gmac].re8670_rx_ring_size[rxRingNum])-DESC_ALIGN;
 			pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 			cp->tx_Mhqring[txRingNum]=(DMA_TX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
 			printk(KERN_CONT "pSramBufsize = %d + %d\n",RE8670_RXRING_BYTES(re_private_data[gmac].re8670_rx_ring_size[rxRingNum])-DESC_ALIGN,RE8670_TXRING_BYTES(re_private_data[gmac].re8670_tx_ring_size[txRingNum])-DESC_ALIGN);
-			
+
 			rtk_dynamic_sram_set(2, 1, re_private_data[gmac].rx_Mring[rxRingNum], sramBlockSizeIdx, sramSizeMappingArray[dynamic_mapping_buffer_size_idx[0]]+sramSizeMappingArray[dynamic_mapping_buffer_size_idx[1]]);
 
 		}
@@ -9347,7 +9384,7 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 			rxRingNum=hwnat_customized_extra_up_rx_ringNum;
 			txRingNum=hwnat_customized_extra_up_tx_ringNum;
 			sramBlockSizeIdx=dynamic_mapping_buffer_size_idx[1];
-			
+
 			pBuf = kzalloc(sramSizeMappingArray[sramBlockSizeIdx]+(DESC_ALIGN*2), GFP_KERNEL);
 			if(!pBuf)return;
 			pBuf2 = kzalloc(sramSizeMappingArray[sramBlockSizeIdx]+(DESC_ALIGN*2), GFP_KERNEL);
@@ -9356,7 +9393,7 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 				return;
 			}
 			dynamic_mapping_buffer[1]=pBuf;
-			
+
 			dma_cache_wback_inv((unsigned long)pBuf, sramSizeMappingArray[sramBlockSizeIdx]+(DESC_ALIGN*2));
 			pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 			cp->rx_Mring[rxRingNum]=(DMA_RX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
@@ -9364,13 +9401,13 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 			//refill rx desc
 			for(i = 0; i <  re_private_data[gmac].re8670_rx_ring_size[rxRingNum]; i++){
 				cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-				if (i == ( re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))		  
+				if (i == ( re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))
 					cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 				else
 					cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
 				cp->rx_Mring[rxRingNum][i].opts2 = 0;
 			}
-			
+
 			pBuf += RE8670_RXRING_BYTES( re_private_data[gmac].re8670_rx_ring_size[rxRingNum])-DESC_ALIGN;
 			pBuf = (void*)( (u32)(pBuf + DESC_ALIGN - 1) & ~(DESC_ALIGN - 1) ) ;
 			cp->tx_Mhqring[txRingNum]=(DMA_TX_DESC*)((u32)(pBuf) | UNCACHE_MASK);
@@ -9383,7 +9420,7 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 			printk(KERN_CONT "pSramBufsize = %d + %d + %d\n",RE8670_RXRING_BYTES( re_private_data[gmac].re8670_rx_ring_size[rxRingNum])-DESC_ALIGN,RE8670_TXRING_BYTES( re_private_data[gmac].re8670_tx_ring_size[txRingNum])-DESC_ALIGN, re_private_data[gmac].re8670_rx_ring_size[rxRingNum]*MAX_HWNAT_CUSTOMIZED_TX_HDR_BUFFER_SIZE);
 
 			rtk_dynamic_sram_set(1, 1, re_private_data[gmac].rx_Mring[rxRingNum], sramBlockSizeIdx, sramSizeMappingArray[dynamic_mapping_buffer_size_idx[0]]);
-			
+
 			//downstream
 			//combine rxring and txring to single 8K sram zone
 			rxRingNum=hwnat_customized_extra_down_rx_ringNum;
@@ -9398,7 +9435,7 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 			//refill rx desc
 			for(i = 0; i <  re_private_data[gmac].re8670_rx_ring_size[rxRingNum]; i++){
 				cp->rx_Mring[rxRingNum][i].addr = (u32)cp->rx_skb[rxRingNum][i].skb->data|UNCACHE_MASK;
-				if (i == ( re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))		  
+				if (i == ( re_private_data[gmac].re8670_rx_ring_size[rxRingNum] - 1))
 					cp->rx_Mring[rxRingNum][i].opts1 = (DescOwn | RingEnd | cp->rx_buff_size);
 				else
 					cp->rx_Mring[rxRingNum][i].opts1 =(DescOwn | cp->rx_buff_size);
@@ -9430,7 +9467,7 @@ void rtk_dynamic_sram_restart(uint32 gmac)
 			rtk_dynamic_sram_state_set(DISABLED);
 		}
 	}
-#endif	
+#endif
 	return;
 }
 
@@ -9442,9 +9479,9 @@ static int dynamic_sram_desc_read(struct file *filp, char *buf, size_t count, lo
 	uint32 addrValue;
 	rtk_dynamic_sram_size_t sram_size;
 	uint32 offset;
-	
+
 	printk(KERN_CONT "%s(%d)\n", (dynamic_sram_desc>0)?"Enable":"Disable", dynamic_sram_desc);
-	
+
 	if((dynamic_sram_desc>0) != rtk_dynamic_sram_state_get())
 		printk(KERN_CONT "\033[1;33;41m[WARNING] State of dynamic_sram_desc is changed, please use re8670_reset to reset rx/tx descriptors\033[0m\n");
 	if(rtk_dynamic_sram_state_get()==DISABLED)
@@ -9454,7 +9491,7 @@ static int dynamic_sram_desc_read(struct file *filp, char *buf, size_t count, lo
 	}
 	else
 		printk(KERN_CONT "Sram clock is enabled\n");
-	
+
 	printk(KERN_CONT "========== Dynamic sram table ==========\n");
 	for(i=0; i<MAX_DYNAMIC_SRAM_SIZE; i++)
 	{
@@ -9462,7 +9499,7 @@ static int dynamic_sram_desc_read(struct file *filp, char *buf, size_t count, lo
 			printk(KERN_CONT "Index[%d] state=%s addrValue=0x%x sram_size=%d offset=%d\n", i, (state)?"Enable":"Disable", addrValue, sramSizeMappingArray[sram_size], offset);
 	}
 
-	
+
 
 	return len;
 }
@@ -9476,14 +9513,14 @@ static int dynamic_sram_desc_write(struct file *filp, char *buf, size_t count, l
 	uint32 addrValue;
 	rtk_dynamic_sram_size_t sram_size;
 	uint32 offset;
-	
+
 	data=pde_data(file_inode(filp));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
 		return 0;
 	}
 
-	gmac = data->gmac;	
+	gmac = data->gmac;
 	if (buf && !copy_from_user(tmpbuf, buf, count))
 	{
 		tmpbuf[count] = '\0';
@@ -9521,7 +9558,7 @@ static int dynamic_sram_desc_write(struct file *filp, char *buf, size_t count, l
 	}
 	//if((dynamic_sram_desc>0) != rtk_dynamic_sram_state_get())
 		//printk("\033[1;33;41m[WARNING] State of dynamic_sram_desc is changed, please use re8670_open to reset rx/tx descriptors\033[0m\n");
-errout:	
+errout:
 	return count;
 }
 #ifdef HWNAT_CUSTOMIZE
@@ -9540,8 +9577,8 @@ static int hwnat_customized_version_read(struct file *filp, char *buf, size_t co
 		return 0;
 	}
 
-	gmac = data->gmac;	
-	
+	gmac = data->gmac;
+
 	printk(KERN_CONT "version: %d\n", hwnat_customized_version);
 #if 0
 	for(rxRingNum=0; rxRingNum<MAX_RXRING_NUM; rxRingNum++)
@@ -9556,7 +9593,7 @@ static int hwnat_customized_version_read(struct file *filp, char *buf, size_t co
 			}
 		}
 	}
-#endif	
+#endif
 	for(rxRingNum=0; rxRingNum<MAX_RXRING_NUM; rxRingNum++)
 	{
 		if(re8686_rx_ring_data_buffer[gmac][rxRingNum])
@@ -9567,25 +9604,25 @@ static int hwnat_customized_version_read(struct file *filp, char *buf, size_t co
 				printk(KERN_CONT "rx_ring_previousDesc[%d]=%d \n", i, re8686_rx_ring_previousDesc[gmac][rxRingNum][i]);
 
 			}
-		}	
+		}
 	}
-	
+
 	return len;
 }
 
 void _hwnat_customized_version_set_by_gmac(int gmac)
 {
 	int i = 0, j = 0;
-	
+
 	{
 		hwnat_customized_version = 2;
 		printk(KERN_CONT "In _hwnat_customized_version_set_by_gmac: dynamic_sram_desc = %d\n",dynamic_sram_desc);
-			
+
 		if(dynamic_sram_desc==0){  // dram mode setting
-		
+
 			hwnat_customized_up_gmac=1;
 			hwnat_customized_down_gmac=2;
-			
+
 			hwnat_customized_up_rx_ringNum=4;
 			hwnat_customized_up_tx_ringNum=3;
 			hwnat_customized_down_rx_ringNum=4;
@@ -9600,7 +9637,7 @@ void _hwnat_customized_version_set_by_gmac(int gmac)
 				re_private_data[hwnat_customized_down_gmac].re8670_rx_ring_size[hwnat_customized_down_rx_ringNum]=1024;
 				re_private_data[hwnat_customized_down_gmac].re8670_tx_ring_size[hwnat_customized_down_tx_ringNum]=1024;
 			}
-			
+
 		}else if(dynamic_sram_desc==1){  // NPTv6 sram mode setting
 			//if(chipID == RTL9607C_CHIP_ID){
 #if defined(HWNAT_CUSTOMIZE_NPTV6_SRAM_ACC_V2)
@@ -9613,18 +9650,18 @@ void _hwnat_customized_version_set_by_gmac(int gmac)
 
 				hwnat_customized_up_flowNum = 3;
 #endif
-				
-				
+
+
 				hwnat_customized_up_rx_ringNum = 4;
 				hwnat_customized_up_tx_ringNum = 3;
 
 #if defined(CONFIG_CMCC) //CMCC
-				hwnat_customized_up0_flowNum = 2;			
+				hwnat_customized_up0_flowNum = 2;
 #elif defined(CONFIG_YUEME)
 
-				hwnat_customized_up0_flowNum = 1;				
+				hwnat_customized_up0_flowNum = 1;
 #endif
-				
+
 				hwnat_customized_up0_rx_ringNum = 4;
 				hwnat_customized_up0_tx_ringNum = 3;
 
@@ -9639,7 +9676,7 @@ void _hwnat_customized_version_set_by_gmac(int gmac)
 #if defined(CONFIG_CMCC) //CMCC
 						re_private_data[hwnat_customized_up_gmac].re8670_rx_ring_size[hwnat_customized_up_rx_ringNum-i]=64;
 						re_private_data[hwnat_customized_up_gmac].re8670_tx_ring_size[hwnat_customized_up_tx_ringNum-i]=128;
-						
+
 #elif defined(CONFIG_YUEME)
 
 						if(i==2)
@@ -9684,15 +9721,15 @@ void _hwnat_customized_version_set_by_gmac(int gmac)
 
 				}
 				if(gmac == hwnat_customized_down_gmac)
-				{	
+				{
 					for(i=0; i<hwnat_customized_down_flowNum; i++)
 					{
 						re_private_data[hwnat_customized_down_gmac].re8670_rx_ring_size[hwnat_customized_down_rx_ringNum-i]=32;
-						re_private_data[hwnat_customized_down_gmac].re8670_tx_ring_size[hwnat_customized_down_tx_ringNum-i]=64;	
+						re_private_data[hwnat_customized_down_gmac].re8670_tx_ring_size[hwnat_customized_down_tx_ringNum-i]=64;
 					}
 
 				}
-				
+
 #else
 				hwnat_customized_up_gmac = 1;
 				hwnat_customized_down_gmac = 2;
@@ -9745,13 +9782,13 @@ void _hwnat_customized_version_set_by_gmac(int gmac)
 					}
 
 				}
-#endif				
+#endif
 
 		}else{ // VXLAN sram mode setting
 				hwnat_customized_up_gmac=1;
 				hwnat_customized_down_gmac=2;
 				hwnat_customized_extra_gmac=0;
-			
+
 				hwnat_customized_up_rx_ringNum=4;
 				hwnat_customized_up_tx_ringNum=3;
 				hwnat_customized_down_rx_ringNum=4;
@@ -9765,29 +9802,29 @@ void _hwnat_customized_version_set_by_gmac(int gmac)
 				{
 					re_private_data[hwnat_customized_up_gmac].re8670_rx_ring_size[hwnat_customized_up_rx_ringNum]=128;
 					re_private_data[hwnat_customized_up_gmac].re8670_tx_ring_size[hwnat_customized_up_tx_ringNum]=re_private_data[hwnat_customized_up_gmac].re8670_rx_ring_size[hwnat_customized_up_rx_ringNum]*2;
-				
+
 				}
 				if(gmac == hwnat_customized_down_gmac)
 				{
 					re_private_data[hwnat_customized_down_gmac].re8670_rx_ring_size[hwnat_customized_down_rx_ringNum]=128;
 					re_private_data[hwnat_customized_down_gmac].re8670_tx_ring_size[hwnat_customized_down_tx_ringNum]=re_private_data[hwnat_customized_down_gmac].re8670_rx_ring_size[hwnat_customized_down_rx_ringNum];
-				
+
 				}
 				if(gmac == hwnat_customized_extra_gmac)
 				{
-					
+
 					re_private_data[hwnat_customized_extra_gmac].re8670_rx_ring_size[hwnat_customized_extra_up_rx_ringNum]=64;
 					re_private_data[hwnat_customized_extra_gmac].re8670_tx_ring_size[hwnat_customized_extra_up_tx_ringNum]=re_private_data[hwnat_customized_extra_gmac].re8670_rx_ring_size[hwnat_customized_extra_up_rx_ringNum]*2;
 					re_private_data[hwnat_customized_extra_gmac].re8670_rx_ring_size[hwnat_customized_extra_down_rx_ringNum]=64;
 					re_private_data[hwnat_customized_extra_gmac].re8670_tx_ring_size[hwnat_customized_extra_down_tx_ringNum]=re_private_data[hwnat_customized_extra_gmac].re8670_rx_ring_size[hwnat_customized_extra_down_rx_ringNum];
 				}
-				
+
 				//sram mapping plan
 				dynamic_mapping_buffer_size_idx[0]=RTK_DYNAMIC_SRAM_16K_BYTES;
 				dynamic_mapping_buffer_size_idx[1]=RTK_DYNAMIC_SRAM_8K_BYTES;
 				dynamic_mapping_buffer_size_idx[2]=RTK_DYNAMIC_SRAM_8K_BYTES;
 				dynamic_mapping_buffer_size_idx[3]=RTK_DYNAMIC_SRAM_8K_BYTES;
-			
+
 		}
 	}
 	if(gmac == hwnat_customized_up_gmac){
@@ -9806,22 +9843,22 @@ void _hwnat_customized_version_set_by_gmac(int gmac)
 			higherq[hwnat_customized_extra_gmac][i] &= ~(0x1<<hwnat_customized_extra_down_rx_ringNum);
 	}
 
-	
-	
-	
-	
+
+
+
+
 
 	if(dynamic_sram_desc)
 	{
 		if(gmac == hwnat_customized_up_gmac)
 			re_private_data[hwnat_customized_up_gmac].iocmd1_reg |= TX_en_precise_dma;
-		
+
 		if(gmac == hwnat_customized_down_gmac)
 			re_private_data[hwnat_customized_down_gmac].iocmd1_reg |= TX_en_precise_dma;
 
 		if(gmac == hwnat_customized_down0_gmac)
 			re_private_data[hwnat_customized_down0_gmac].iocmd1_reg |= TX_en_precise_dma;
-		
+
 		if(gmac == hwnat_customized_extra_gmac)
 			re_private_data[hwnat_customized_extra_gmac].iocmd1_reg |= TX_en_precise_dma;
 	}
@@ -9829,13 +9866,13 @@ void _hwnat_customized_version_set_by_gmac(int gmac)
 	{
 		if(gmac == hwnat_customized_up_gmac && (re_private_data[hwnat_customized_up_gmac].iocmd1_reg&TX_en_precise_dma) )
 			re_private_data[hwnat_customized_up_gmac].iocmd1_reg &= ~(TX_en_precise_dma);
-		
+
 		if(gmac == hwnat_customized_down_gmac && (re_private_data[hwnat_customized_down_gmac].iocmd1_reg & TX_en_precise_dma))
 			re_private_data[hwnat_customized_down_gmac].iocmd1_reg &= ~(TX_en_precise_dma);
 
 		if(gmac == hwnat_customized_down0_gmac && (re_private_data[hwnat_customized_down0_gmac].iocmd1_reg & TX_en_precise_dma) )
 			re_private_data[hwnat_customized_down0_gmac].iocmd1_reg &= ~(TX_en_precise_dma);
-		
+
 		if(gmac == hwnat_customized_extra_gmac && (re_private_data[hwnat_customized_extra_gmac].iocmd1_reg & TX_en_precise_dma) )
 			re_private_data[hwnat_customized_extra_gmac].iocmd1_reg &= ~(TX_en_precise_dma);
 	}
@@ -9865,12 +9902,12 @@ void _hwnat_customized_version_set(int version){
 			re_private_data[hwnat_customized_down_gmac].re8670_rx_ring_size[hwnat_customized_down_rx_ringNum]=1024;
 			re_private_data[hwnat_customized_up_gmac].re8670_tx_ring_size[hwnat_customized_up_tx_ringNum]=1024;
 			re_private_data[hwnat_customized_down_gmac].re8670_tx_ring_size[hwnat_customized_down_tx_ringNum]=1024;
-			
+
 		}else if(dynamic_sram_desc==1){
 			//if(chipID == RTL9607C_CHIP_ID){
 				hwnat_customized_up_gmac=1;
 				hwnat_customized_down_gmac=2;
-			
+
 				hwnat_customized_up_rx_ringNum=4;
 				hwnat_customized_up_tx_ringNum=3;
 				hwnat_customized_down_rx_ringNum=4;
@@ -9879,11 +9916,11 @@ void _hwnat_customized_version_set(int version){
 				re_private_data[hwnat_customized_down_gmac].re8670_rx_ring_size[hwnat_customized_down_rx_ringNum]=256;
 				re_private_data[hwnat_customized_up_gmac].re8670_tx_ring_size[hwnat_customized_up_tx_ringNum]=256;
 				re_private_data[hwnat_customized_down_gmac].re8670_tx_ring_size[hwnat_customized_down_tx_ringNum]=256;
-			/*	
+			/*
 			}else{
 				hwnat_customized_up_gmac=0;
 				hwnat_customized_down_gmac=0;
-			
+
 				hwnat_customized_up_rx_ringNum=4;
 				hwnat_customized_up_tx_ringNum=3;
 				hwnat_customized_down_rx_ringNum=3;
@@ -9898,7 +9935,7 @@ void _hwnat_customized_version_set(int version){
 			//if(chipID == RTL9607C_CHIP_ID){
 				hwnat_customized_up_gmac=1;
 				hwnat_customized_down_gmac=2;
-			
+
 				hwnat_customized_up_rx_ringNum=4;
 				hwnat_customized_up_tx_ringNum=3;
 				hwnat_customized_down_rx_ringNum=4;
@@ -9910,7 +9947,7 @@ void _hwnat_customized_version_set(int version){
 			/*}else{
 				hwnat_customized_up_gmac=0;
 				hwnat_customized_down_gmac=0;
-			
+
 				hwnat_customized_up_rx_ringNum=4;
 				hwnat_customized_up_tx_ringNum=3;
 				hwnat_customized_down_rx_ringNum=3;
@@ -9926,7 +9963,7 @@ void _hwnat_customized_version_set(int version){
 	{
 		hwnat_customized_version = 2;
 		printk(KERN_CONT "In _hwnat_customized_version_set: dynamic_sram_desc = %d\n",dynamic_sram_desc);
-			
+
 		if(dynamic_sram_desc==0){  // dram mode setting
 			//if(chipID == RTL9607C_CHIP_ID){
 				hwnat_customized_up_gmac=1;
@@ -9935,7 +9972,7 @@ void _hwnat_customized_version_set(int version){
 				hwnat_customized_up_gmac=0;
 				hwnat_customized_down_gmac=0;
 			}*/
-			
+
 			hwnat_customized_up_rx_ringNum=4;
 			hwnat_customized_up_tx_ringNum=3;
 			hwnat_customized_down_rx_ringNum=4;
@@ -9944,7 +9981,7 @@ void _hwnat_customized_version_set(int version){
 			re_private_data[hwnat_customized_down_gmac].re8670_rx_ring_size[hwnat_customized_down_rx_ringNum]=1024;
 			re_private_data[hwnat_customized_up_gmac].re8670_tx_ring_size[hwnat_customized_up_tx_ringNum]=1024;
 			re_private_data[hwnat_customized_down_gmac].re8670_tx_ring_size[hwnat_customized_down_tx_ringNum]=1024;
-			
+
 		}else if(dynamic_sram_desc==1){  // NPTv6 sram mode setting
 			//if(chipID == RTL9607C_CHIP_ID){
 #if defined(HWNAT_CUSTOMIZE_NPTV6_SRAM_ACC_V2)
@@ -9985,9 +10022,9 @@ void _hwnat_customized_version_set(int version){
 				for(i=0; i<hwnat_customized_down_flowNum; i++)
 				{
 					re_private_data[hwnat_customized_down_gmac].re8670_rx_ring_size[hwnat_customized_down_rx_ringNum-i]=32;
-					re_private_data[hwnat_customized_down_gmac].re8670_tx_ring_size[hwnat_customized_down_tx_ringNum-i]=64;	
+					re_private_data[hwnat_customized_down_gmac].re8670_tx_ring_size[hwnat_customized_down_tx_ringNum-i]=64;
 				}
-				
+
 #else
 				hwnat_customized_up_gmac = 1;
 				hwnat_customized_down_gmac = 2;
@@ -10028,11 +10065,11 @@ void _hwnat_customized_version_set(int version){
 					re_private_data[hwnat_customized_down0_gmac].re8670_rx_ring_size[hwnat_customized_down0_rx_ringNum-i]=64;
 					re_private_data[hwnat_customized_down0_gmac].re8670_tx_ring_size[hwnat_customized_down0_tx_ringNum-i]=128;
 				}
-#endif				
+#endif
 			/*}else{
 				hwnat_customized_up_gmac=0;
 				hwnat_customized_down_gmac=0;
-			
+
 				hwnat_customized_up_rx_ringNum=4;
 				hwnat_customized_up_tx_ringNum=3;
 				hwnat_customized_down_rx_ringNum=3;
@@ -10047,7 +10084,7 @@ void _hwnat_customized_version_set(int version){
 				hwnat_customized_up_gmac=1;
 				hwnat_customized_down_gmac=2;
 				hwnat_customized_extra_gmac=0;
-			
+
 				hwnat_customized_up_rx_ringNum=4;
 				hwnat_customized_up_tx_ringNum=3;
 				hwnat_customized_down_rx_ringNum=4;
@@ -10056,7 +10093,7 @@ void _hwnat_customized_version_set(int version){
 				hwnat_customized_extra_up_tx_ringNum = 3;
 				hwnat_customized_extra_down_rx_ringNum = 3;
 				hwnat_customized_extra_down_tx_ringNum = 2;
-				
+
 				re_private_data[hwnat_customized_up_gmac].re8670_rx_ring_size[hwnat_customized_up_rx_ringNum]=128;
 				re_private_data[hwnat_customized_up_gmac].re8670_tx_ring_size[hwnat_customized_up_tx_ringNum]=re_private_data[hwnat_customized_up_gmac].re8670_rx_ring_size[hwnat_customized_up_rx_ringNum]*2;
 				re_private_data[hwnat_customized_down_gmac].re8670_rx_ring_size[hwnat_customized_down_rx_ringNum]=128;
@@ -10074,7 +10111,7 @@ void _hwnat_customized_version_set(int version){
 			/*}else{
 				hwnat_customized_up_gmac=0;
 				hwnat_customized_down_gmac=0;
-			
+
 				hwnat_customized_up_rx_ringNum=4;
 				hwnat_customized_up_tx_ringNum=3;
 				hwnat_customized_down_rx_ringNum=3;
@@ -10113,7 +10150,7 @@ static int hwnat_customized_version_write(struct file *filp, char *buf, size_t c
 	uint32 addrValue;
 	rtk_dynamic_sram_size_t sram_size;
 	uint32 offset;
-	
+
 	data=pde_data(file_inode(filp));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
@@ -10131,7 +10168,7 @@ static int hwnat_customized_version_write(struct file *filp, char *buf, size_t c
 		if(strncmp(strptr, "1", 1) == 0){
 			_hwnat_customized_version_set(1);
 		}else if(strncmp(strptr, "2", 1) == 0){
-			_hwnat_customized_version_set(2);	
+			_hwnat_customized_version_set(2);
 		}else{
 			printk(KERN_CONT "\033[1;33;41m[WARNING] Please enter 1 or 2 \033[0m\n");
 			goto errout;
@@ -10139,14 +10176,14 @@ static int hwnat_customized_version_write(struct file *filp, char *buf, size_t c
 	}
 
 	printk(KERN_CONT "version %d\n", hwnat_customized_version);
-errout:	
+errout:
 	return count;
 }
 
 static int hwnat_customized_check_tx_done_read(struct file *filp, char *buf, size_t count, loff_t *offp )
 {
 	int len = 0;
-	
+
 	printk(KERN_CONT "%s(%d)\n", (hwnat_customized_check_tx_done)?"Enable":"Disable", hwnat_customized_check_tx_done);
 
 	return len;
@@ -10158,14 +10195,14 @@ static int hwnat_customized_check_tx_done_write(struct file *filp, char *buf, si
 	char	*strptr;
 	static struct re_private *data;
 	unsigned int gmac;
-	
+
 	data=pde_data(file_inode(filp));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
 		return 0;
 	}
 
-	gmac = data->gmac;	
+	gmac = data->gmac;
 	if (buf && !copy_from_user(tmpbuf, buf, count))
 	{
 		tmpbuf[count] = '\0';
@@ -10193,8 +10230,8 @@ static int hwnat_customized_check_tx_done_write(struct file *filp, char *buf, si
 	}
 
 	printk(KERN_CONT "%s(%d)\n", (hwnat_customized_check_tx_done)?"Enable":"Disable", hwnat_customized_check_tx_done);
-	
-errout:	
+
+errout:
 	return count;
 }
 
@@ -10215,7 +10252,7 @@ static int rx_ring_read(struct seq_file *m, void *v)
 	}
 
 	gmac = data->gmac;
-	
+
 	for(j=0;j<MAX_RXRING_NUM;j++)
 	{
 		if(data->rx_ring_show_bitmap&(1<<j))
@@ -10227,9 +10264,9 @@ static int rx_ring_read(struct seq_file *m, void *v)
 			}
 
 			for(i=0;i<data->re8670_rx_ring_size[j];i++){
-				seq_printf(m, "[idx%3d]:desc[0x%p]->skb[0x%p]->buf[0x%08x]:%s", 
-					i, &data->rx_Mring[j][i], data->rx_skb[j][i].skb, 
-					data->rx_Mring[j][i].addr, 
+				seq_printf(m, "[idx%3d]:desc[0x%p]->skb[0x%p]->buf[0x%08x]:%s",
+					i, &data->rx_Mring[j][i], data->rx_skb[j][i].skb,
+					data->rx_Mring[j][i].addr,
 					(data->rx_Mring[j][i].opts1 & DescOwn)? "NIC" : "CPU");
 				if(i == data->rx_Mtail[j]){
 					seq_printf(m, "<=rx_tail");
@@ -10313,9 +10350,9 @@ static int tx_ring_read(struct seq_file *m, void *v)
 			}
 
 			for(i=0;i<data->re8670_tx_ring_size[j];i++) {
-				seq_printf(m, "[idx%3d]:desc[0x%p]->skb[0x%p]->buf[0x%08x]:%s", 
-					i, &data->tx_Mhqring[j][i], data->tx_skb[j][i].skb, 
-					data->tx_Mhqring[j][i].addr, 
+				seq_printf(m, "[idx%3d]:desc[0x%p]->skb[0x%p]->buf[0x%08x]:%s",
+					i, &data->tx_Mhqring[j][i], data->tx_skb[j][i].skb,
+					data->tx_Mhqring[j][i].addr,
 					(data->tx_Mhqring[j][i].opts1 & DescOwn)? "NIC" : "CPU");
 				if(i == data->tx_Mhqtail[j]) {
 					seq_printf(m, "<=tx_hqtail");
@@ -10365,8 +10402,8 @@ void nic_tx_ring_dump(unsigned int gmac, struct seq_file *m)
 	DMA_TX_DESC *txd;
 	int ring_index=0;
 	int i;
-	
-	cp=re_private_data_root.re_private_data_ptr[gmac];	
+
+	cp=re_private_data_root.re_private_data_ptr[gmac];
 	for(ring_index=0;ring_index<MAX_TXRING_NUM;ring_index++)
 	{
 		if(cp->tx_ring_show_bitmap&(1<<ring_index))
@@ -10397,7 +10434,7 @@ void nic_tx_ring_dump(unsigned int gmac, struct seq_file *m)
 			seq_printf(m, "\n");
 		}
 	}
-	
+
 #ifdef TX_RING_DEBUG
 	if(cp->tx_ring_backup_debug)
 	{
@@ -10409,7 +10446,7 @@ void nic_tx_ring_dump(unsigned int gmac, struct seq_file *m)
 				for(i=0;i<cp->re8670_tx_ring_size[ring_index];i++)
 				{
 					txd = (DMA_TX_DESC *)((u32)&cp->rtl8686_tx_ring_debug[ring_index].txDescriptor[i]|0xa0000000);
-					
+
 					seq_printf(m, "%08x[%03d] %08x %08x %08x %08x %08x OWN=%d E=%d F=%d L=%d LEN=%05d LSO=%d MTU=%d\n",(u32)&txd->opts1,i,txd->opts1,txd->addr,txd->opts2,txd->opts3,txd->opts4
 						,(txd->opts1&0x80000000)?1:0
 						,(txd->opts1&0x40000000)?1:0
@@ -10425,7 +10462,7 @@ void nic_tx_ring_dump(unsigned int gmac, struct seq_file *m)
 		}
 		seq_printf(m, "###########################Additional Tx ring debug info end###########################\n");
 	}
-#endif	
+#endif
 }
 
 static int nic_tx_ring_dump_read(struct seq_file *m, void *v)
@@ -10445,7 +10482,7 @@ static int nic_tx_ring_dump_read(struct seq_file *m, void *v)
 }
 
 static ssize_t nic_tx_ring_dump_write(struct file *filp, const char __user *buf, size_t count, loff_t *offp )
-{	
+{
 	return	tx_ring_write(filp, buf, count, offp);
 }
 
@@ -10457,7 +10494,7 @@ void nic_rx_ring_dump(unsigned int gmac, struct seq_file *m)
 	int i;
 	int ring_index=0;
 
-	cp=re_private_data_root.re_private_data_ptr[gmac];	
+	cp=re_private_data_root.re_private_data_ptr[gmac];
 	for(ring_index=0;ring_index<MAX_RXRING_NUM;ring_index++)
 	{
 		if(cp->rx_ring_show_bitmap&(1<<ring_index))
@@ -10537,7 +10574,7 @@ void gmac_padding_enable(unsigned int gmac, char enable)
 {
 	struct re_private_root *root_cp = &re_private_data_root;
 	struct re_private *cp = root_cp->re_private_data_ptr[gmac];
-	
+
 	if (gmac>2)
 		goto error;
 #ifndef CONFIG_GMAC1_USABLE
@@ -10560,7 +10597,7 @@ void gmac_padding_enable(unsigned int gmac, char enable)
 		RLE0787_W32(gmac, TCR, RLE0787_R32(gmac, TCR) | 0x1);
 		printk(KERN_CONT "Disable gmac[%d] padding\n", gmac);
 	}
-	
+
 	return;
 error:
 	printk(KERN_CONT "%s: ignored gmac %d\n",__func__,gmac);
@@ -10571,7 +10608,7 @@ static ssize_t padding_enable_write(struct file *filp, const char __user *buf, s
 	static struct re_private *data;
 	unsigned int gmac;
 	unsigned char tmpBuf[16] = {0};
-	int i=0;	
+	int i=0;
 	data=pde_data(file_inode(filp));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
@@ -10605,13 +10642,13 @@ static int wifi_tx_qos_mapping_read(struct seq_file *m, void *v)
 	static struct re_private *data;
 	struct file *file = m->private;
 	unsigned int i;
-	
+
 	data=pde_data(file_inode(file));
 	if(!(data)){
 		printk(KERN_INFO "Null data");
 		return 0;
 	}
-	
+
 	seq_printf(m, "Wifi Tx QoS mapping: \n");
 	seq_printf(m, "  1,2: BK low\n");
 	seq_printf(m, "  0,3: BE\n");
@@ -10647,7 +10684,7 @@ static int wifi_tx_qos_mapping_read(struct seq_file *m, void *v)
 			}
 		}
 	}
-	
+
 	return 0;
 }
 
@@ -10683,7 +10720,7 @@ static int wifi_tx_qos_mapping_write(struct file *filp, char *buf, size_t count,
 			goto errout;
 		}
 		internal_priority = simple_strtol(tokptr, NULL, 0);
-		if(!strcmp(tokptr, "enable")) 
+		if(!strcmp(tokptr, "enable"))
 		{
 			data->wifi_tx_qos_enable = GMAC_ON;
 			printk(KERN_CONT "wifi_tx_qos_enable=%d ", data->wifi_tx_qos_enable);
@@ -10700,7 +10737,7 @@ static int wifi_tx_qos_mapping_write(struct file *filp, char *buf, size_t count,
 				printk(KERN_CONT "invalid internal_priority=%d ", internal_priority);
 				goto errout;
 			}
-			
+
 			printk(KERN_CONT "internal priority %d ", internal_priority);
 			tokptr = strsep(&strptr," ");
 			if (tokptr==NULL)
@@ -10714,7 +10751,7 @@ static int wifi_tx_qos_mapping_write(struct file *filp, char *buf, size_t count,
 				printk(KERN_CONT "invalid wifi_queue_index=%d ", wifi_queue_index);
 				goto errout;
 			}
-			
+
 			printk(KERN_CONT "mapping to wifi queue %d\n", wifi_queue_index);
 			if(wifi_queue_index == 0)
 				data->wifi_tx_qos_mapping[internal_priority] = 1;
@@ -10732,7 +10769,7 @@ errout:
 		printk(KERN_CONT "internal_priority wifi_queue_index\n");
 		return -EFAULT;
 	}
-		
+
 	return count;
 }
 #endif
@@ -10859,7 +10896,7 @@ static int qos_cfg_write(struct file *filp, char *buf, size_t count, loff_t *off
 				printk(KERN_CONT "%s:%d Invalid input!\n",__FUNCTION__,__LINE__);
 				goto err;
 			}
-			if(!HAL_IS_PORT_EXIST(port) || queue>=HAL_MAX_NUM_OF_QUEUE() || meterIdx>=HAL_MAX_NUM_OF_METERING()){ 
+			if(!HAL_IS_PORT_EXIST(port) || queue>=HAL_MAX_NUM_OF_QUEUE() || meterIdx>=HAL_MAX_NUM_OF_METERING()){
 				printk(KERN_CONT "%s:%d variables %d,%d,%d out of range!\n",__FUNCTION__,__LINE__,port,queue,meterIdx);
 				goto err;
 			}
@@ -10871,7 +10908,7 @@ static int qos_cfg_write(struct file *filp, char *buf, size_t count, loff_t *off
 				else
 					printk(KERN_CONT "%s:%d rtk_rate_shareMeter_set success!\n",__FUNCTION__,__LINE__);
 			}
-			
+
 		}
 		else if(!memcmp(tokptr, "set_en", 6)){// queue enable
 			if(sscanf(buf,"set_en %d %d %d",&port,&queue,&enable)!=3){
@@ -11125,7 +11162,7 @@ const char *Str_portSpeed[] = {
     PORT_STR_SPEED_5G,
     PORT_STR_SPEED_2G5LITE,
     PORT_STR_SPEED_5GLITE,
-    
+
 };
 const char *Str_portDuplex[] = {
 	PORT_STR_HALF_DUPLEX,
@@ -11652,13 +11689,13 @@ unsigned char *rtl8686_proc_dir_name_symlink[MAX_GMAC_NUM] =
 struct proc_dir_entry *rtl8686_proc_dir_symlink[MAX_GMAC_NUM]={0};
 
 #define MAX_RTK_NI_PROC_NUM		50
-	
+
 struct rtk_ni_proc_entry {
 	char *proc_name;
 	struct proc_ops *op;
 	char isRoot;
 };
-	
+
 static struct rtk_ni_proc_entry rtk_ni_proc_table[MAX_RTK_NI_PROC_NUM] = {
 	{"dbg_level", &dbglv_fops, 0},
 	{"dbg_times", &dbgtimes_fops, 0},
@@ -11707,13 +11744,13 @@ static void rtl8686_proc_debug_init(unsigned int gmac)
 	struct re_private *cp = root_cp->re_private_data_ptr[gmac];
 	char org_proc_name[128];
 	int i;
-	
+
 	if(cp->gmac_enabled != GMAC_TRUE)
 		return;
-	
+
 	if(rtl8686_proc_dir[gmac]==NULL)
 		rtl8686_proc_dir[gmac] = proc_mkdir(rtl8686_proc_dir_name[gmac], NULL);
-	
+
 	if(rtl8686_proc_dir_symlink[gmac]==NULL)
 		rtl8686_proc_dir_symlink[gmac] = proc_mkdir(rtl8686_proc_dir_name_symlink[gmac], NULL);
 
@@ -11734,7 +11771,7 @@ static void rtl8686_proc_debug_init(unsigned int gmac)
 	}
 }
 
-void port_relate_setting(unsigned int gmac) 
+void port_relate_setting(unsigned int gmac)
 {
 	struct re_private_root *root_cp = &re_private_data_root;
 	struct re_private *cp = root_cp->re_private_data_ptr[gmac];
@@ -11746,11 +11783,11 @@ void port_relate_setting(unsigned int gmac)
 	for(j=0;j<SW_PORT_NUM;j++) {
 		cp->port2dev[j] = eth_net_dev[gmac];
 	}
-	
+
 	for(i=0;i<totalDev;i++) {
 		if(rtl8686_dev_table[i].dev_instant==NULL)
 			continue;
-		DEVPRIV(rtl8686_dev_table[i].dev_instant)->txPortMask = 
+		DEVPRIV(rtl8686_dev_table[i].dev_instant)->txPortMask =
 			IS_CPU_PORT(rtl8686_dev_table[i].phyPort) ? 0 : (1<<rtl8686_dev_table[i].phyPort);
 	}
 }
@@ -11812,32 +11849,32 @@ struct net_device_ops rtl_netdevops = {
 //	unsigned int gmac;
 //	unsigned i;
 //
-//	//desc and hw setting & proc		
-//	if(dev_num){			
+//	//desc and hw setting & proc
+//	if(dev_num){
 //		for(gmac=0;gmac<MAX_GMAC_NUM;gmac++) {
 //
 //			cp = root_cp->re_private_data_ptr[gmac];
-//			
+//
 //			if(cp->gmac_enabled != GMAC_TRUE)
 //				continue;
-//		
-//			re8670_close(eth_net_dev[gmac]);			
-//		}			
+//
+//			re8670_close(eth_net_dev[gmac]);
+//		}
 //	}
-//	
+//
 //	for(gmac=0;gmac<MAX_GMAC_NUM;gmac++) {
 //
 //		cp = root_cp->re_private_data_ptr[gmac];
-//		
+//
 //		if(cp->gmac_enabled != GMAC_TRUE)
 //			continue;
-//		
+//
 //		re8670_free_rings(cp);
 //		proc_remove(rtl8686_proc_dir[gmac]);
 //	}
-//	
+//
 //	//dev
-//	for(i=0; i < totalDev; i++){		
+//	for(i=0; i < totalDev; i++){
 //		if(rtl8686_dev_table[i].dev_instant){
 //			unregister_netdev(rtl8686_dev_table[i].dev_instant);
 //			free_netdev(rtl8686_dev_table[i].dev_instant);
@@ -11846,7 +11883,7 @@ struct net_device_ops rtl_netdevops = {
 //#ifdef CONFIG_RTL8686_SWITCH
 //	if(timer_pending(&re_private_data_root.rx_pause_by_software_interrupt_timer))
 //		timer_delete(&re_private_data_root.rx_pause_by_software_interrupt_timer);
-//	
+//
 //	//for gpon driver
 //    drv_nic_rxhook_exit();
 //#endif
@@ -11865,7 +11902,7 @@ static int rtk_gmac_re_private_data_init(void)
 	struct re_private_root *root_cp = &re_private_data_root;
 	unsigned int gmac, rx_ring_idx, i;
 
-	
+
 	root_cp->txfunc = NULL;
 	///--init re_private_data_root
 	for(gmac=0 ; gmac<MAX_GMAC_NUM ; gmac++)
@@ -11879,13 +11916,13 @@ static int rtk_gmac_re_private_data_init(void)
 
 	///--init re_private_data
 	root_cp->re_private_data_ptr[0]->gmac_enabled = GMAC_TRUE;
-#ifdef CONFIG_GMAC1_USABLE	
-	root_cp->re_private_data_ptr[1]->gmac_enabled = GMAC_TRUE; 
+#ifdef CONFIG_GMAC1_USABLE
+	root_cp->re_private_data_ptr[1]->gmac_enabled = GMAC_TRUE;
 #else
-	root_cp->re_private_data_ptr[1]->gmac_enabled = GMAC_FALSE; 
-#endif 
+	root_cp->re_private_data_ptr[1]->gmac_enabled = GMAC_FALSE;
+#endif
 #ifdef CONFIG_GMAC2_USABLE
-	root_cp->re_private_data_ptr[2]->gmac_enabled = GMAC_TRUE; 
+	root_cp->re_private_data_ptr[2]->gmac_enabled = GMAC_TRUE;
 #else
 	root_cp->re_private_data_ptr[2]->gmac_enabled = GMAC_FALSE;
 #endif
@@ -11903,18 +11940,18 @@ static int rtk_gmac_re_private_data_init(void)
 #endif
 
 #ifdef RX_NAPI_MODE
-		
-	if(dynamic_sram_desc!=0)	
-	{	
-		root_cp->re_private_data_ptr[0]->napi_budget = 8192;	
-		root_cp->re_private_data_ptr[1]->napi_budget = 8192;	
-		root_cp->re_private_data_ptr[2]->napi_budget = 8192;	
-	}	
-	else	
-	{	
-		root_cp->re_private_data_ptr[0]->napi_budget = GMAC0_RX_NAPI_BUDGET;	
-		root_cp->re_private_data_ptr[1]->napi_budget = GMAC1_RX_NAPI_BUDGET;	
-		root_cp->re_private_data_ptr[2]->napi_budget = GMAC2_RX_NAPI_BUDGET;	
+
+	if(dynamic_sram_desc!=0)
+	{
+		root_cp->re_private_data_ptr[0]->napi_budget = 8192;
+		root_cp->re_private_data_ptr[1]->napi_budget = 8192;
+		root_cp->re_private_data_ptr[2]->napi_budget = 8192;
+	}
+	else
+	{
+		root_cp->re_private_data_ptr[0]->napi_budget = GMAC0_RX_NAPI_BUDGET;
+		root_cp->re_private_data_ptr[1]->napi_budget = GMAC1_RX_NAPI_BUDGET;
+		root_cp->re_private_data_ptr[2]->napi_budget = GMAC2_RX_NAPI_BUDGET;
 	}
 #endif
 
@@ -11980,7 +12017,7 @@ static int rtk_gmac_re_private_data_init(void)
 	root_cp->re_private_data_ptr[0]->rx_not_only_ring1 = GMAC0_RX_NOT_ONLY_RING1;
 	root_cp->re_private_data_ptr[1]->rx_not_only_ring1 = GMAC1_RX_NOT_ONLY_RING1;
 	root_cp->re_private_data_ptr[2]->rx_not_only_ring1 = GMAC2_RX_NOT_ONLY_RING1;
-	
+
 	root_cp->re_private_data_ptr[0]->iocmd_reg = CMD_CONFIG;
 	root_cp->re_private_data_ptr[1]->iocmd_reg = CMD_CONFIG;
 	root_cp->re_private_data_ptr[2]->iocmd_reg = CMD_CONFIG;
@@ -12015,7 +12052,7 @@ static int rtk_gmac_re_private_data_init(void)
 	root_cp->re_private_data_ptr[0]->rx_buff_size = SKB_BUF_SIZE;
 	root_cp->re_private_data_ptr[1]->rx_buff_size = SKB_BUF_SIZE;
 	root_cp->re_private_data_ptr[2]->rx_buff_size = SKB_BUF_SIZE;
-	
+
 	/* Vendor default, deliberately restored.
 	 *
 	 * This was briefly set to GMAC_OFF to work around the recycle pool being
@@ -12037,7 +12074,7 @@ static int rtk_gmac_re_private_data_init(void)
 	{
 		LCDev_mapping[i].status=0xff;
 	}
-	
+
 	return 0;
 }
 
@@ -12075,7 +12112,7 @@ static int rtk_gmac_register_root_netdev(unsigned int base, int irq)
 {
 	struct net_device *dev_temp;
 	int i, j, rc;
-	
+
 	//printk("\n%s %d: allocate new netdev name=%s\n", __func__, __LINE__, rtl8686_dev_table[0].ifname);
 	dev_temp = alloc_etherdev(sizeof(struct re_dev_private));
 	if (!dev_temp) {
@@ -12086,7 +12123,7 @@ static int rtk_gmac_register_root_netdev(unsigned int base, int irq)
 	sprintf(dev_temp->name, rtl8686_dev_table[0].ifname);
 	dev_temp->netdev_ops = &rtl_netdevops;
 	dev_temp->watchdog_timeo = TX_TIMEOUT;
-	
+
 #ifdef CONFIG_REALTEK_HW_LSO
 #ifdef HW_CHECKSUM_OFFLOAD
 	dev_temp->features |= NETIF_F_HW_CSUM;
@@ -12105,7 +12142,7 @@ static int rtk_gmac_register_root_netdev(unsigned int base, int irq)
 	dev_temp->features |= NETIF_F_GSO; //:test
 	dev_temp->hw_features |= NETIF_F_GSO;
 #endif
-	netif_set_gso_max_size(dev_temp, 65535); 	
+	netif_set_gso_max_size(dev_temp, 65535);
 #endif
 #endif
 #ifdef RX_NAPI_MODE
@@ -12119,7 +12156,7 @@ static int rtk_gmac_register_root_netdev(unsigned int base, int irq)
 	dev_temp->irq = irq;	// internal phy
 	//priv data setting
 	dev_temp->rtk_priv_flags = RTK_IFF_DOMAIN_ELAN;
-	
+
 	dev_temp->base_addr = (unsigned long) base;
 
 	/* read MAC address from EEPROM */
@@ -12151,7 +12188,7 @@ static int rtk_gmac_register_root_netdev(unsigned int base, int irq)
 			dev_temp->dev_addr[4], dev_temp->dev_addr[5],
 			dev_temp->irq);
 			*/
-	
+
 	return dev_temp;
 }
 
@@ -12160,7 +12197,7 @@ static int rtk_gmac_register_other_netdev(void)
 	unsigned int totalDev = TOTAL_RTL8686_DEV_NUM;
 	struct net_device *dev = NULL;
 	int i, j, rc;
-	
+
 	for(i=1;i<totalDev;i++) {
 		dev = alloc_etherdev(sizeof(struct re_dev_private));
 		if (!dev) {
@@ -12198,7 +12235,7 @@ static int rtk_gmac_register_other_netdev(void)
 			default:
 				printk(KERN_CONT "Error! Should not go here!\n");
 		}
-		
+
 #ifdef CONFIG_REALTEK_HW_LSO
 #ifdef HW_CHECKSUM_OFFLOAD
 		dev->features |= NETIF_F_HW_CSUM;
@@ -12217,7 +12254,7 @@ static int rtk_gmac_register_other_netdev(void)
 		dev->features |= NETIF_F_GSO; //:test
 		dev->hw_features |= NETIF_F_GSO;
 #endif
-		netif_set_gso_max_size(dev, 65535); 	
+		netif_set_gso_max_size(dev, 65535);
 #endif
 #endif
 #ifdef RX_NAPI_MODE
@@ -12230,18 +12267,18 @@ static int rtk_gmac_register_other_netdev(void)
 		dev->max_mtu = RE8686_ETH_DATA_LEN;
 
 		dev->base_addr = PRIV2DEV(&re_private_data_root)->base_addr;
-		dev->irq = PRIV2DEV(&re_private_data_root)->irq; // internal phy		
+		dev->irq = PRIV2DEV(&re_private_data_root)->irq; // internal phy
 		rtl8686_dev_table[i].dev_instant = dev;
 		memset(dev->name, 0, sizeof(dev->name));
 		memcpy(dev->name, rtl8686_dev_table[i].ifname, strlen(rtl8686_dev_table[i].ifname));
-		
+
 		rtl_set_ethtool_ops(dev);
 		rc = register_netdev(dev);
 		if (rc) {
 			printk(KERN_CONT "%s %d rc = %d\n", __func__, __LINE__, rc);
 			goto err_out_iomap;
 		}
-#ifdef CONFIG_RTL8686_SWITCH 
+#ifdef CONFIG_RTL8686_SWITCH
 		if(i < (1+MAX_LAN_PORT+MAX_PON_PORT) && i >= 1 )
 		{
 			// copy interface name
@@ -12283,7 +12320,7 @@ err_out_iomap:
 
 static int rtk_gmac_multi_lan_device_init(void)
 {
-#ifdef CONFIG_RTL8686_SWITCH 
+#ifdef CONFIG_RTL8686_SWITCH
 	// port 5 is rgmii port
 #ifdef CONFIG_RGMII_RESET_PROCESS
 	strcpy(LCDev_mapping[RGMII_PORT].ifname, "eth0");
@@ -12370,7 +12407,7 @@ static int rtk_gmac_netdev_init(unsigned int gmac, unsigned int base, int irq,
 		printk(KERN_CONT "%s %d: invalid gmac=%d\n", __func__, __LINE__, gmac);
 		return -1;
 	}
-	
+
 	if(re_private_data[gmac].gmac_enabled != GMAC_TRUE)
 		return -1;
 
@@ -12389,7 +12426,7 @@ static int rtk_gmac_netdev_init(unsigned int gmac, unsigned int base, int irq,
 	dev = dev_get_by_name(&init_net, rtl8686_dev_table[0].ifname);
 	if(dev==NULL)
 	{
-		dev = rtk_gmac_register_root_netdev(base, irq); 
+		dev = rtk_gmac_register_root_netdev(base, irq);
 		if(dev == NULL) {
 			printk(KERN_CONT "%s %d rtk_gmac_register_root_netdev return FAIL\n", __func__, __LINE__);
 			return -1;
@@ -12440,7 +12477,7 @@ static int rtk_gmac_netdev_init(unsigned int gmac, unsigned int base, int irq,
 			return -1;
 		}
 		rtk_gmac_multi_lan_device_init();
-		
+
 		//sw stuff
 #if defined(CONFIG_RTL865X_ETH_PRIV_SKB) || defined(CONFIG_RTL865X_ETH_PRIV_SKB_ADV)
 		init_priv_eth_skb_buf();
@@ -12468,7 +12505,7 @@ static int rtk_gmac_netdev_init(unsigned int gmac, unsigned int base, int irq,
 #endif
 #endif
 	}
-	
+
 #ifdef TX_RING_DEBUG
 	if(re_private_data[gmac].tx_ring_backup_debug)
 	{
@@ -12512,12 +12549,12 @@ static int rtk_gmac_netdev_init(unsigned int gmac, unsigned int base, int irq,
 static int rtk_gmac_hw_init(unsigned int gmac)
 {
 	re8670_ip_enable(gmac);
-	
+
 	if(re_private_data[gmac].gmac_enabled != GMAC_TRUE)
 		return -1;
 
 	//stop hw
-	re8670_stop_hw(&re_private_data[gmac]);		
+	re8670_stop_hw(&re_private_data[gmac]);
 	re8670_reset_hw(&re_private_data[gmac]);
 
 	config_tx_jumbo(gmac, re_private_data[gmac].tx_jumbo_frame_enabled);
@@ -12539,24 +12576,24 @@ static int of_platform_rtk_gmac_probe(struct platform_device *ofdev)
 	struct device_node *np;
 	int rc, irq, i;
 	u32 *regs;
-	void *data;	
+	void *data;
 
 #ifdef CONFIG_RTL8686_SWITCH
 	extern int drv_nic_rxhook_init(void);
 #endif
-	
+
 	match = of_match_device(of_platform_rtk_gmac_table, &ofdev->dev);
 	if (!match)
 		return -EINVAL;
-	
+
 	np = ofdev->dev.of_node;
-		
+
 	rtk_gmac_re_private_data_init();
 	for (i=0; i<MAX_GMAC_NUM; i++) {
 		char name[8];
 		struct device_node *child;
 		snprintf(name, sizeof(name)-1, "gmac%d", i);
-		child = of_find_node_by_name(np, name);		
+		child = of_find_node_by_name(np, name);
 		if (child) {
 			regs  = of_get_property(child, "reg", NULL);
 			if (regs) {
@@ -12564,7 +12601,7 @@ static int of_platform_rtk_gmac_probe(struct platform_device *ofdev)
 				//printk(KERN_CONT "%s(%d): reg %x %x irq=%d\n", __func__,__LINE__,regs[0],regs[1],irq);
 				rtk_gmac_customize_re_private_data_init(i, child);
 				rtk_gmac_netdev_init(i, ioremap(regs[0], regs[1]), irq, ofdev);
-				rtk_gmac_hw_init(i);			
+				rtk_gmac_hw_init(i);
 			}
 		} else {
 			root_cp->re_private_data_ptr[i]->gmac_enabled = GMAC_FALSE;
@@ -12574,12 +12611,12 @@ static int of_platform_rtk_gmac_probe(struct platform_device *ofdev)
 	}
 
 #ifdef CONFIG_RTL8686_SWITCH
-	drv_nic_rxhook_init();	
+	drv_nic_rxhook_init();
 #endif
 #ifdef CONFIG_REALTEK_HW_LSO
 	re8670_init_mtu();
 #endif
-	
+
 	return 0;
 }
 
@@ -12603,14 +12640,14 @@ void re8670_hardware_reset(unsigned int gmac)
 	struct re_private_root *root_cp = &re_private_data_root;
 	struct re_private *cp = root_cp->re_private_data_ptr[gmac];
 	unsigned int waitingTimes = 0;
-	
+
 	printk(KERN_CONT "%s %d enter\n", __func__, __LINE__);
-	
+
 	//MII Tx Disable
 	RLE0787_W32(gmac, IO_CMD, RLE0787_R32(gmac, IO_CMD)&~(1<<4));
 	//MII Rx Disable
 	RLE0787_W32(gmac, IO_CMD, RLE0787_R32(gmac, IO_CMD)&~(1<<5));
-	
+
 	re8670_stop_hw(cp);
 
 	switch(gmac) {
@@ -12630,7 +12667,7 @@ void re8670_hardware_reset(unsigned int gmac)
 			REG32(NEW_BSP_IP_SEL) |= BSP_EN_GMAC2;
 			break;
 	}
-	
+
 	//Setting to 1 forces the Ethernet module to a software reset state which disables the transmitter and receiver
 	RLE0787_W32(gmac, COM_REG, RLE0787_R32(gmac, COM_REG) | 0x1);
 	while(RLE0787_R32(gmac, COM_REG) & 0x1 && (waitingTimes < 1000))
@@ -12643,7 +12680,7 @@ void re8670_hardware_reset(unsigned int gmac)
 	RLE0787_W32(gmac, IO_CMD, RLE0787_R32(gmac, IO_CMD)|(1<<4));
 	//MII Rx Enable
 	RLE0787_W32(gmac, IO_CMD, RLE0787_R32(gmac, IO_CMD)|(1<<5));
-	
+
 	config_tx_jumbo(gmac, cp->tx_jumbo_frame_enabled);
 	gmac_padding_enable(gmac, DISABLED);
 
@@ -12661,9 +12698,9 @@ int re8670_reset(void)
 	unsigned int tempLxcbus1SlaveReg;
 	unsigned int upMask = 0;
 	unsigned int gmac;
-	int i;	
-#if defined(CONFIG_RTL9607C_SERIES) && defined(HWNAT_CUSTOMIZE)	
-	unsigned int sramIsUsedByOthers = FALSE;	
+	int i;
+#if defined(CONFIG_RTL9607C_SERIES) && defined(HWNAT_CUSTOMIZE)
+	unsigned int sramIsUsedByOthers = FALSE;
 #endif
 
 	printk(KERN_CONT "%s %d enter\n", __func__, __LINE__);
@@ -12692,7 +12729,7 @@ int re8670_reset(void)
 			continue;
 
 		printk(KERN_CONT "%s %d gmac=%d\n", __func__, __LINE__, gmac);
-		
+
 		//Enable LX bus timeout monitor
 		if(gmac==0 || gmac==2)
 		{
@@ -12714,35 +12751,35 @@ int re8670_reset(void)
 			//printk("%s %d LXCBUS1_MASTER_REG=0x%x\n", __func__, __LINE__, (*(volatile u32*)((u32)LXCBUS1_MASTER_REG)));
 			//printk("%s %d LXCBUS1_SLAVE_REG=0x%x\n", __func__, __LINE__, (*(volatile u32*)((u32)LXCBUS1_SLAVE_REG)));
 		}
-		
+
 		cp->stag_pid = RLE0787_R32(gmac, VLAN_REG);
 		cp->stag_pid1 = RLE0787_R32(gmac, VLAN1_REG);
-		
+
 		re8670_hardware_reset(gmac);
 
 		re8670_free_rings(cp);
-#if defined(CONFIG_RTL9607C_SERIES)  && defined(HWNAT_CUSTOMIZE)	
-		//_hwnat_customized_version_set(hwnat_customized_version);	
-		_hwnat_customized_version_set_by_gmac(gmac);	
+#if defined(CONFIG_RTL9607C_SERIES)  && defined(HWNAT_CUSTOMIZE)
+		//_hwnat_customized_version_set(hwnat_customized_version);
+		_hwnat_customized_version_set_by_gmac(gmac);
 
-		memset(re8686_rx_descIdx_customized_tx_descAddr,0, sizeof(re8686_rx_descIdx_customized_tx_descAddr[0][0])*MAX_GMAC_NUM*MAX_RXRING_NUM); 
-		if(rtk_dynamic_sram_state_get()==ENABLED)	
-		{	
+		memset(re8686_rx_descIdx_customized_tx_descAddr,0, sizeof(re8686_rx_descIdx_customized_tx_descAddr[0][0])*MAX_GMAC_NUM*MAX_RXRING_NUM);
+		if(rtk_dynamic_sram_state_get()==ENABLED)
+		{
 			printk(KERN_CONT "\033[1;33;41m Sram is set before! @ %s(%d)\033[0m\n", __FUNCTION__, __LINE__);
-			//sramIsUsedByOthers = TRUE;	
-		}	
-#endif	
-			
+			//sramIsUsedByOthers = TRUE;
+		}
+#endif
+
 		re8670_alloc_rings(cp);
-					
-#if defined(CONFIG_RTL9607C_SERIES)  && defined(HWNAT_CUSTOMIZE)	
+
+#if defined(CONFIG_RTL9607C_SERIES)  && defined(HWNAT_CUSTOMIZE)
 		printk(KERN_CONT "%s %d\n", __func__, __LINE__);
-		if(cp->gmac_enabled == GMAC_TRUE)	
-		{	
-			//if(sramIsUsedByOthers==FALSE) 
-			rtk_dynamic_sram_restart(gmac); 
-		}	
-#endif	
+		if(cp->gmac_enabled == GMAC_TRUE)
+		{
+			//if(sramIsUsedByOthers==FALSE)
+			rtk_dynamic_sram_restart(gmac);
+		}
+#endif
 
 		re8670_init_hw(cp);
 		re8670_init_trx_cdo(cp);
@@ -12801,5 +12838,5 @@ EXPORT_SYMBOL(re8686_set_flow_control);
 EXPORT_SYMBOL(re8686_set_pauseBySw);
 #endif
 EXPORT_SYMBOL(re8686_set_vlan_register);
-EXPORT_SYMBOL(re8686_get_vlan_register);	
+EXPORT_SYMBOL(re8686_get_vlan_register);
 EXPORT_SYMBOL(re8686_customized_rx_and_tx);
