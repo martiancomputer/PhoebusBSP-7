@@ -132,7 +132,7 @@ The Bootlin big-endian MIPS32 glibc GCC 14 toolchain is fetched automatically.
 
 A full BSP-7 build has two userspace stages:
 
-1. `sdk/rootfs/build-rootfs.sh` builds the shared BusyBox/s6 rootfs and tracked
+1. `sdk/rootfs/build-rootfs.sh` builds the shared BusyBox/s6/btop rootfs and tracked
    SDK files.
 2. `tools/build-userspace.sh` builds the network-facing third-party programs
    that BSP-7 intentionally owns.
@@ -144,6 +144,12 @@ hostapd 2.12, dnsmasq 2.93 and Dropbear 2026.94, and verifies runtime
 `SKIP_USERSPACE=1 ./build.sh` is for kernel-only iteration. It is not a
 deployable router image: services such as hostapd, dnsmasq, Dropbear and
 iptables will be absent.
+
+The SDK cross-builds btop for MIPS32r2, replacing BusyBox `top`. Its CPU panel
+discovers all four logical VPEs; its network panel can select each LAN/WAN
+netdev, including bridge members without individual IP addresses. See the
+SDK's resource-monitor section for runtime-library, UTF-8 and hardware-offload
+counter limitations. Host GNU `localedef` is required for the UTF-8 locale.
 
 ## RAM boot
 

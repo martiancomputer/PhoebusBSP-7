@@ -441,7 +441,7 @@ done
 say "verifying shared libraries resolve"
 # `[ -e ]` follows symlinks, so a dangling link fails this the way it fails exec.
 unresolved=$(
-	for b in "$OUT"/sbin/* "$OUT"/bin/* "$OUT"/usr/sbin/*; do
+	for b in "$OUT"/sbin/* "$OUT"/bin/* "$OUT"/usr/sbin/* "$OUT"/usr/libexec/*; do
 		[ -f "$b" ] || continue
 		${CROSS_COMPILE}readelf -d "$b" 2>/dev/null \
 			| grep -oP '(?<=Shared library: \[)[^]]+'
