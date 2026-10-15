@@ -8356,15 +8356,12 @@ static int rtl8192cd_proc_set_temperature(struct file *file, const char __user *
 	int i, j;
 	int previous_offset = 0;
 
-	if (count > sizeof(tmp)) {
-#ifdef __KERNEL__
-		WARN_ON(1);
-#endif
-		return -EFAULT;
-	}
+	if (!count || count >= sizeof(tmp))
+		return -EINVAL;
 
 	if (!buffer || copy_from_user(tmp, buffer, count))
 		goto exit;
+	tmp[count] = '\0';
 
 	if (strstr(tmp, "dump")) {
 		printk("wifi_t_coefficient = %d, wifi_t_offset = %d, wifi_t_tp_level = %d\n",
@@ -9727,18 +9724,22 @@ static int rtl8192cd_proc_led(struct file *file, const char *buffer,
 		else
 			ecos_pr_fun("flag [%d] not supported!\n", flag);
 #else
-	if (buffer && !copy_from_user(tmpbuf, buffer, count)) {
-		if (sscanf(tmpbuf, "%99d", &flag) != 1)
-			printk("Invalid input \"%s\" for proc led\n", tmpbuf);
-		else if (flag == 0) // disable
-			control_wireless_led(priv, 0);
-		else if (flag == 1) // enable
-			control_wireless_led(priv, 1);
-		else if (flag == 2) // restore
-			control_wireless_led(priv, 2);
-		else
-			printk("flag [%d] not supported!\n", flag);
-    }
+	if (!buffer || !count || count >= sizeof(tmpbuf))
+		return -EINVAL;
+	if (copy_from_user(tmpbuf, buffer, count))
+		return -EFAULT;
+	tmpbuf[count] = '\0';
+
+	if (sscanf(tmpbuf, "%d", &flag) != 1)
+		printk("Invalid input \"%s\" for proc led\n", tmpbuf);
+	else if (flag == 0) // disable
+		control_wireless_led(priv, 0);
+	else if (flag == 1) // enable
+		control_wireless_led(priv, 1);
+	else if (flag == 2) // restore
+		control_wireless_led(priv, 2);
+	else
+		printk("flag [%d] not supported!\n", flag);
 	return count;
 #endif
 }
@@ -9969,13 +9970,15 @@ static int rtl8192cd_proc_gpio_ctrl_write(struct file *file, const char *buffer,
 #ifdef __ECOS
 	ecos_pr_fun("Command: [%s] gpio: [%d] action: [%s]\n", command, gpio_num, action);
 #else
-	if (buffer && !copy_from_user(tmp, buffer, 32)) {
-		num = sscanf(tmp, "%8s %d %4s", command, &gpio_num, action);
-
-		if (num != 3) {
-			panic_printk("Invalid gpio parameter! Failed!\n");
-			return num;
-		}
+	if (!buffer || !count || count >= sizeof(tmp))
+		return -EINVAL;
+	if (copy_from_user(tmp, buffer, count))
+		return -EFAULT;
+	tmp[count] = '\0';
+	num = sscanf(tmp, "%7s %u %3s", command, &gpio_num, action);
+	if (num != 3) {
+		panic_printk("Invalid gpio parameter! Failed!\n");
+		return -EINVAL;
 	}
 	panic_printk("Command: [%s] gpio: [%d] action: [%s]\n", command, gpio_num, action);
 #endif

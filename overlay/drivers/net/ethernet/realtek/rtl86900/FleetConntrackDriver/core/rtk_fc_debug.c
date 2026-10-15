@@ -11884,3 +11884,23 @@ int rtk_fc_sw_check_hwflow_set(struct file *file, const char *buffer, unsigned l
 	return count;
 }
 #endif
+
+/* Proc removal has drained all users that can start these diagnostic timers.
+ * They may rearm themselves, so deleting a pending instance is insufficient.
+ */
+void rtk_fc_debug_timers_exit(void)
+{
+#if defined(CONFIG_RTK_L34_XPON_PLATFORM)
+	if (dumphs_timer) {
+		timer_shutdown_sync(&dumphs_timer->timer);
+		RTK_FC_HELPER_MGR_TIMER_LIST_KFREE(dumphs_timer);
+		dumphs_timer = NULL;
+	}
+#elif defined(CONFIG_RTK_L34_G3_PLATFORM)
+	if (dumpheaderI_timer) {
+		timer_shutdown_sync(&dumpheaderI_timer->timer);
+		RTK_FC_HELPER_MGR_TIMER_LIST_KFREE(dumpheaderI_timer);
+		dumpheaderI_timer = NULL;
+	}
+#endif
+}

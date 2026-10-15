@@ -1915,22 +1915,23 @@ int rtk_cfg80211_set_wps_p2p_ie(struct rtl8192cd_priv *priv, const char *buf, in
 
 unsigned char *parsing_specific_ie(unsigned char *pbuf, int index, unsigned char oui, int *len, int limit)
 {
-	unsigned char *ie=NULL;
-
-	ie = get_ie(pbuf, index, len, limit);
-
-	if(ie) {
-		if((*(ie+5) == oui) && (oui!=0) && limit > 5)
-			return ie;
-		else if(oui == 0)
-			return ie;
-		else {
-			limit -= (*len+2);
-			return parsing_specific_ie(ie+*len+2, index, oui, len, limit);
-		}
-	}
-	else
+	if (!len)
 		return NULL;
+	*len = 0;
+	while (limit >= 2) {
+		unsigned char *ie = get_ie(pbuf, index, len, limit);
+		int consumed;
+
+		if (!ie)
+			return NULL;
+		/* The OUI byte is at IE offset 5 and needs four payload bytes. */
+		if (!oui || (*len >= 4 && ie[5] == oui))
+			return ie;
+		consumed = ie - pbuf + *len + 2;
+		pbuf += consumed;
+		limit -= consumed;
+	}
+	return NULL;
 }
 
 
@@ -1952,7 +1953,9 @@ int rtk_cfg80211_syn_beacon_ies(
 {
 	unsigned char *TAG_IE=NULL, *ExtCap_IE_Ptr=NULL , *tmp_IE_ptr=NULL;
 	unsigned char *OSEN_IE=NULL;
-	size_t TAG_LEN=0, ExtCap_IE_LEN=0,tmp_IE_Len=0 ;
+	int TAG_LEN=0, ExtCap_IE_LEN=0, tmp_IE_Len=0;
+	unsigned char *rsn_ie_end;
+	bool rsn_found = false, wpa_found = false;
 	unsigned char* HS2_Content=0;
 	unsigned short cipher_count=0;
 	DOT11_RSN_IE_COUNT_SUITE *cipher_suite_ptr;
@@ -2114,6 +2117,8 @@ int rtk_cfg80211_syn_beacon_ies(
 	int count,i;
 	TAG_IE = get_ie(BeaconBuf, _RSN_IE_2_, &TAG_LEN, BeaconLen);
 	if (TAG_IE) {
+			rsn_found = true;
+			rsn_ie_end = TAG_IE + TAG_LEN + 2;
 			/* header */
 			TAG_IE += sizeof(DOT11_WPA2_IE_HEADER);
 
@@ -2160,13 +2165,15 @@ int rtk_cfg80211_syn_beacon_ies(
 			TAG_IE += (2 + count * sizeof(DOT11_RSN_IE_SUITE));
 #ifdef CONFIG_IEEE80211W
 			/*RSN cap , len=2*/
-			RSN_Cap_Ptr = (DOT11_RSN_CAPABILITY *)TAG_IE;
+			RSN_Cap_Ptr = NULL;
+			if (rsn_ie_end - TAG_IE >= sizeof(*RSN_Cap_Ptr))
+				RSN_Cap_Ptr = (DOT11_RSN_CAPABILITY *)TAG_IE;
 			
-			if (RSN_Cap_Ptr->field.MFPC && RSN_Cap_Ptr->field.MFPR) {
+			if (RSN_Cap_Ptr && RSN_Cap_Ptr->field.MFPC && RSN_Cap_Ptr->field.MFPR) {
 				PMF_IEEE80211W = MGMT_FRAME_PROTECTION_REQUIRED;
 				SHA256_VAL=1;
 				NDEBUG("[OSEN] 11W=2 , SHA256=1\n");
-			} else if (RSN_Cap_Ptr->field.MFPC) {
+			} else if (RSN_Cap_Ptr && RSN_Cap_Ptr->field.MFPC) {
 				PMF_IEEE80211W = MGMT_FRAME_PROTECTION_OPTIONAL;
 				SHA256_VAL=1;
 				NDEBUG("[OSEN] 11W=1, SHA256=1\n");
@@ -2194,11 +2201,16 @@ int rtk_cfg80211_syn_beacon_ies(
 			tmp_IE_ptr = TAG_IE+TAG_LEN+2;
 			tmp_IE_Len = BeaconLen - (size_t)(tmp_IE_ptr - BeaconBuf);
 
+			if (TAG_LEN < sizeof(wpa_oui))
+				continue;
 			pDot11RSNIEHeader = (DOT11_RSN_IE_HEADER *)TAG_IE;
 
 			if (memcmp(pDot11RSNIEHeader->OUI, wpa_oui, sizeof(wpa_oui)))
 				continue;
 #ifdef DIRECT_HAPD_RSN_IE /*directly use RSN IE from hostapd*/
+			if (!rsn_found && !wpa_found)
+				priv->pmib->dot11RsnIE.rsnielen = 0;
+			wpa_found = true;
 			memcpy((priv->pmib->dot11RsnIE.rsnie + priv->pmib->dot11RsnIE.rsnielen), TAG_IE, TAG_LEN+2);
 			priv->pmib->dot11RsnIE.rsnielen += TAG_LEN+2;
 			priv->pmib->dot11OperationEntry.keep_rsnie=1;
@@ -2550,6 +2562,138 @@ void dump_ies(struct rtl8192cd_priv *priv,
 
 }
 
+/* Validate all count fields against this element, including optional RSN
+ * capabilities, PMKIDs and the group management cipher. The caller already
+ * checked the enclosing TLV length.
+ */
+static int realtek_validate_security_ie(const u8 *ie, size_t len, bool wpa)
+{
+	size_t header_len = wpa ? sizeof(DOT11_RSN_IE_HEADER) :
+				 sizeof(DOT11_WPA2_IE_HEADER);
+	size_t count, suites_len;
+	const u8 *p;
+	int i;
+
+	len += 2;
+	if (len < header_len + sizeof(DOT11_RSN_IE_SUITE))
+		return -EINVAL;
+	p = ie + header_len + sizeof(DOT11_RSN_IE_SUITE);
+	len -= header_len + sizeof(DOT11_RSN_IE_SUITE);
+	/* Pairwise cipher and AKM suite lists. */
+	for (i = 0; i < 2; i++) {
+		if (len < 2)
+			return -EINVAL;
+		count = p[0] | (p[1] << 8);
+		p += 2;
+		len -= 2;
+		if (count > DOT11_MAX_CIPHER_ALGORITHMS ||
+		    count > len / sizeof(DOT11_RSN_IE_SUITE))
+			return -EINVAL;
+		suites_len = count * sizeof(DOT11_RSN_IE_SUITE);
+		p += suites_len;
+		len -= suites_len;
+	}
+	if (!len)
+		return 0;
+	/* Capabilities are optional in both RSN and WPA. */
+	if (len < 2)
+		return -EINVAL;
+	p += 2;
+	len -= 2;
+	if (wpa || !len)
+		return len ? -EINVAL : 0;
+	if (len < 2)
+		return -EINVAL;
+	count = p[0] | (p[1] << 8);
+	p += 2;
+	len -= 2;
+	if (count > len / 16)
+		return -EINVAL;
+	len -= count * 16;
+	return (!len || len == sizeof(DOT11_RSN_IE_SUITE)) ? 0 : -EINVAL;
+}
+
+/* Reject unsupported IE sizes before changing any AP state. nl80211 checks
+ * TLV framing, but does not know the sizes of this driver's private buffers.
+ */
+static int realtek_validate_beacon_ies(struct rtl8192cd_priv *priv,
+				     const u8 *ies, size_t len,
+				     size_t *rsnie_len)
+{
+	if (len && !ies)
+		return -EINVAL;
+	while (len) {
+		size_t ie_len;
+
+		if (len < 2 || ies[1] > len - 2)
+			return -EINVAL;
+		ie_len = ies[1];
+		switch (ies[0]) {
+		case _SSID_IE_:
+			if (ie_len > 32 || ie_len > sizeof(SSID))
+				return -EINVAL;
+			break;
+		case _SUPPORTEDRATES_IE_:
+			if (ie_len + 2 > sizeof(priv->hapd_supp_rates))
+				return -EINVAL;
+			break;
+		case _EXT_SUPPORTEDRATES_IE_:
+			if (ie_len + 2 > sizeof(priv->hapd_ext_supp_rates))
+				return -EINVAL;
+			break;
+		case _RSNX_IE_:
+			if (ie_len + 2 > sizeof(priv->rsn_xe))
+				return -EINVAL;
+			break;
+		case _RSN_IE_2_:
+			if (realtek_validate_security_ie(ies, ie_len, false))
+				return -EINVAL;
+			if (ie_len + 2 > sizeof(priv->pmib->dot11RsnIE.rsnie) - *rsnie_len)
+				return -EINVAL;
+			*rsnie_len += ie_len + 2;
+			break;
+		case _RSN_IE_1_:
+			if (ie_len < sizeof(wpa_oui) ||
+			    memcmp(ies + 2, wpa_oui, sizeof(wpa_oui)))
+				break;
+			if (realtek_validate_security_ie(ies, ie_len, true))
+				return -EINVAL;
+			if (ie_len + 2 > sizeof(priv->pmib->dot11RsnIE.rsnie) - *rsnie_len)
+				return -EINVAL;
+			*rsnie_len += ie_len + 2;
+			break;
+		}
+		ies += ie_len + 2;
+		len -= ie_len + 2;
+	}
+	return 0;
+}
+
+static int realtek_validate_beacon(struct rtl8192cd_priv *priv,
+				   const struct cfg80211_beacon_data *info)
+{
+	size_t head_ies_len = 0;
+	size_t rsnie_len = 0;
+	int ret;
+
+	if (info->head_len) {
+		if (!info->head || info->head_len < WLAN_HDR_A4_QOS_HT_LEN)
+			return -EINVAL;
+		head_ies_len = info->head_len - WLAN_HDR_A4_QOS_HT_LEN;
+	}
+	if (head_ies_len > 4095 || info->tail_len > 4095 - head_ies_len)
+		return -EINVAL;
+	if (head_ies_len) {
+		ret = realtek_validate_beacon_ies(priv,
+			info->head + WLAN_HDR_A4_QOS_HT_LEN, head_ies_len,
+			&rsnie_len);
+		if (ret)
+			return ret;
+	}
+	return realtek_validate_beacon_ies(priv, info->tail, info->tail_len,
+					  &rsnie_len);
+}
+
 void realtek_set_ies_apmode(struct rtl8192cd_priv *priv, struct cfg80211_beacon_data *info)
 {
 	NLENTER;
@@ -2557,11 +2701,23 @@ void realtek_set_ies_apmode(struct rtl8192cd_priv *priv, struct cfg80211_beacon_
 	//20180130
 	unsigned char *beacon_buf=NULL;
 	size_t beacon_len=0;
-	beacon_len = info->head_len + info->tail_len - WLAN_HDR_A4_QOS_HT_LEN ;
-	beacon_buf = (unsigned char *)kmalloc(beacon_len+10, GFP_ATOMIC);
-        if (beacon_buf != NULL)
-                if(beacon_len+10 > 4095 )
-                        printk(KERN_CRIT"%s %d %d \n",__func__,__LINE__,beacon_len+10);
+	size_t head_ies_len = 0;
+
+	/* SET_BEACON may update only the tail. Never subtract the fixed header
+	 * length from an absent or shorter head.
+	 */
+	if (info->head_len) {
+		if (!info->head || info->head_len < WLAN_HDR_A4_QOS_HT_LEN)
+			return;
+		head_ies_len = info->head_len - WLAN_HDR_A4_QOS_HT_LEN;
+	}
+	if (info->tail_len && !info->tail)
+		return;
+	if (head_ies_len > 4095 || info->tail_len > 4095 - head_ies_len)
+		return;
+	beacon_len = head_ies_len + info->tail_len;
+	if (beacon_len)
+		beacon_buf = kmalloc(beacon_len + 10, GFP_ATOMIC);
 	clear_wps_ies(priv);
 
 	if(info->beacon_ies) {
@@ -2580,7 +2736,7 @@ void realtek_set_ies_apmode(struct rtl8192cd_priv *priv, struct cfg80211_beacon_
 		/*Sync TIME ZONE IE , BC FANG*/
 		ie = parsing_specific_ie(info->proberesp_ies, _TIMEZONE_IE_, 0, &ie_len, info->proberesp_ies_len);
 
-		if(ie) {
+		if (ie && ie_len <= sizeof(priv->pmib->hs2Entry.timezone_ie)) {
 			memcpy(priv->pmib->hs2Entry.timezone_ie, ie+2, ie_len);
 			priv->pmib->hs2Entry.timezone_ielen = ie_len;
 			NDEBUG2(COLOR_BLUE"%s %d Time Zone IE found\n"COLOR_NONE,__func__,__LINE__);
@@ -2603,11 +2759,11 @@ void realtek_set_ies_apmode(struct rtl8192cd_priv *priv, struct cfg80211_beacon_
 		int i=0;
 		//unsigned char beacon_str[500]={0};
 
-		if(info->head)
-			memcpy(beacon_buf, info->head+WLAN_HDR_A4_QOS_HT_LEN, info->head_len-WLAN_HDR_A4_QOS_HT_LEN);
+		if (head_ies_len)
+			memcpy(beacon_buf, info->head + WLAN_HDR_A4_QOS_HT_LEN, head_ies_len);
 
-		if(info->tail)
-			memcpy(beacon_buf+info->head_len-WLAN_HDR_A4_QOS_HT_LEN, info->tail, info->tail_len);
+		if (info->tail_len)
+			memcpy(beacon_buf + head_ies_len, info->tail, info->tail_len);
 
 
 
@@ -2709,9 +2865,11 @@ static void config_security_from_beacon(struct rtl8192cd_priv *priv,
 	struct cfg80211_beacon_data *beacon, struct rtknl *rtk)
 {
 	u8 *p;
+	u8 *rsn_ie_end;
 	s32 len;
 	u16 cap_info;
 	bool privacy_enable = false;
+	bool rsn_found = false, wpa_found = false;
 
 	u8 dot11EnablePSK = 0, dot11WPACipher = 0, dot11WPA2Cipher = 0, dot11PrivacyAlgrthm = 0, dot118021xAlgrthm = 0;
 #ifdef CONFIG_IEEE80211W
@@ -2765,6 +2923,8 @@ static void config_security_from_beacon(struct rtl8192cd_priv *priv,
 		p = get_ie(beacon->tail, _RSN_IE_2_, &len, beacon->tail_len);
 		if (p)
 		{
+			rsn_found = true;
+			rsn_ie_end = p + len + 2;
 
 #ifdef DIRECT_HAPD_RSN_IE /*directly use RSN IE from hostapd*/
 			memcpy(priv->pmib->dot11RsnIE.rsnie, p, len+2);
@@ -2813,13 +2973,15 @@ static void config_security_from_beacon(struct rtl8192cd_priv *priv,
 			p += (2 + count * sizeof(DOT11_RSN_IE_SUITE));
 
 			/* rsn cap */
-			pDot11RSNCapability = (DOT11_RSN_CAPABILITY *)p;
-			if (pDot11RSNCapability->field.MFPC && pDot11RSNCapability->field.MFPR)
+			pDot11RSNCapability = NULL;
+			if (rsn_ie_end - p >= sizeof(*pDot11RSNCapability))
+				pDot11RSNCapability = (DOT11_RSN_CAPABILITY *)p;
+			if (pDot11RSNCapability && pDot11RSNCapability->field.MFPC && pDot11RSNCapability->field.MFPR)
 			{
 				dot11IEEE80211W = MGMT_FRAME_PROTECTION_REQUIRED;
 				dot11EnableSHA256 = true;
 			}
-			else if (pDot11RSNCapability->field.MFPC)
+			else if (pDot11RSNCapability && pDot11RSNCapability->field.MFPC)
 			{
 				dot11IEEE80211W = MGMT_FRAME_PROTECTION_OPTIONAL;
 				dot11EnableSHA256 = true;
@@ -2838,11 +3000,16 @@ static void config_security_from_beacon(struct rtl8192cd_priv *priv,
 			if (!p) break;
 			
 			offset = (p - beacon->tail) + 2 + len;
+			if (len < sizeof(wpa_oui))
+				continue;
 			pDot11RSNIEHeader = (DOT11_RSN_IE_HEADER *)p;
 			
 			if (memcmp(pDot11RSNIEHeader->OUI, wpa_oui, sizeof(wpa_oui)))
 				continue;
 #ifdef DIRECT_HAPD_RSN_IE /*directly use RSN IE from hostapd*/
+			if (!rsn_found && !wpa_found)
+				priv->pmib->dot11RsnIE.rsnielen = 0;
+			wpa_found = true;
 			memcpy((priv->pmib->dot11RsnIE.rsnie + priv->pmib->dot11RsnIE.rsnielen), p, len+2);
 			priv->pmib->dot11RsnIE.rsnielen += len+2;
 			priv->pmib->dot11OperationEntry.keep_rsnie=1;
@@ -2925,6 +3092,7 @@ static int realtek_change_beacon(struct wiphy *wiphy, struct net_device *dev,
 {
 	struct rtknl *rtk = wiphy_priv(wiphy);
 	struct rtl8192cd_priv *priv = realtek_get_priv(wiphy, dev);
+	int ret;
 
 	NLENTER;
 	
@@ -2933,11 +3101,20 @@ static int realtek_change_beacon(struct wiphy *wiphy, struct net_device *dev,
 
 	if ((OPMODE & WIFI_AP_STATE) == 0)
 		return -EOPNOTSUPP;
+	ret = realtek_validate_beacon(priv, beacon);
+	if (ret)
+		return ret;
 
-	realtek_reset_security(priv);
+	if (beacon->head_len)
+		realtek_reset_security(priv);
 	realtek_set_ies_apmode(priv, beacon);/*cfg p2p*/
-	config_ssid_from_beacon(priv, beacon);
-	config_security_from_beacon(priv, beacon, rtk);
+	/* Tail-only beacon updates are valid. Without a head there is no
+	 * capability field from which to reconstruct WPA/privacy state.
+	 */
+	if (beacon->head_len) {
+		config_ssid_from_beacon(priv, beacon);
+		config_security_from_beacon(priv, beacon, rtk);
+	}
 
 	NLEXIT;
 
@@ -3850,7 +4027,7 @@ static int realtek_cfg80211_del_station(struct wiphy *wiphy, struct net_device *
 {
 	struct rtknl *rtk = wiphy_priv(wiphy);
 	struct rtl8192cd_priv *priv = realtek_get_priv(wiphy, dev);
-	struct stat_info	*pstat;
+	struct stat_info	*pstat = NULL;
 	int ret=0;
 #if /*defined(OPENWRT_CC) || */ defined(__LINUX_3_20__)
 	const u8 *mac = params->mac;
@@ -3879,6 +4056,8 @@ static int realtek_cfg80211_del_station(struct wiphy *wiphy, struct net_device *
 		mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
 
 	realtek_del_station(priv, pstat);
+	/* The station slot can be reused once realtek_del_station() releases it. */
+	pstat = NULL;
 
 realtek_cfg80211_del_station_end:
 	if (pstat != NULL)
@@ -3896,13 +4075,16 @@ static int realtek_cfg80211_change_station(struct wiphy *wiphy,
 	struct rtknl *rtk = wiphy_priv(wiphy);
 	struct rtl8192cd_priv *priv = realtek_get_priv(wiphy, dev);
 	struct stat_info *pstat = NULL;
-	struct ieee80211req_mlme mlme;
+	struct ieee80211req_mlme mlme = {0};
 	int err = 0;
 
 	NLENTER;
 
 	if (!realtek_cfg80211_ready(priv))
 		return -EIO;
+
+	if (!mac || !params)
+		return -EINVAL;
 
 	if(mac)
 	{
@@ -3911,7 +4093,7 @@ static int realtek_cfg80211_change_station(struct wiphy *wiphy,
 	}
 
 	if(pstat == NULL)
-		goto realtek_cfg80211_change_station_end;
+		return -ENOENT;
 		
 #if 0
 	if ((OPMODE & WIFI_AP_STATE) == 0)
@@ -3931,13 +4113,18 @@ static int realtek_cfg80211_change_station(struct wiphy *wiphy,
 #endif
 
 #ifdef CONFIG_IEEE80211W
-	if ( (OPMODE & WIFI_AP_STATE) &&
-		(!priv->pmib->dot1180211AuthEntry.dot11EnablePSK)) {
-		if (params->sta_flags_set & BIT(NL80211_STA_FLAG_MFP))
-			pstat->isPMF = 1;
-	}
+	if ((OPMODE & WIFI_AP_STATE) &&
+	    (params->sta_flags_mask & BIT(NL80211_STA_FLAG_MFP)))
+		pstat->isPMF = !!(params->sta_flags_set &
+				 BIT(NL80211_STA_FLAG_MFP));
 #endif
 	
+	/* SET_STATION may update only MFP, rates or airtime weight. Absence
+	 * from the update mask means authorization must remain unchanged.
+	 */
+	if (!(params->sta_flags_mask & BIT(NL80211_STA_FLAG_AUTHORIZED)))
+		goto realtek_cfg80211_change_station_end;
+
 	if (params->sta_flags_set & BIT(NL80211_STA_FLAG_AUTHORIZED))
 		mlme.im_op = IEEE80211_MLME_AUTHORIZE;
 	else
@@ -3945,25 +4132,16 @@ static int realtek_cfg80211_change_station(struct wiphy *wiphy,
 
 	if(mlme.im_op == IEEE80211_MLME_AUTHORIZE){
 		NDEBUG3("IEEE80211_MLME_AUTHORIZE(4-way success!)\n");
-#ifdef CONFIG_IEEE80211W
-		if (OPMODE & WIFI_AP_STATE) 
-		{
-			if (priv->pmib->dot1180211AuthEntry.dot11EnablePSK) {
-				NDEBUG3("[mgmt_frame_prot]=%d\n", pstat->wpa_sta_info->mgmt_frame_prot);
-				pstat->isPMF = (pstat->wpa_sta_info->mgmt_frame_prot) ? 1 : 0;
-			}
-		}
-#ifdef CONFIG_IEEE80211W_CLI
-		else if (OPMODE & WIFI_STATION_STATE) 
+#if defined(CONFIG_IEEE80211W) && defined(CONFIG_IEEE80211W_CLI)
+		if (OPMODE & WIFI_STATION_STATE)
 			pstat->isPMF = (priv->support_pmf) ? 1 : 0;
-#endif
 #endif
 	}else{
 		NDEBUG3("IEEE80211_MLME_UNAUTHORIZE(clean port)\n");
 	}
 	
 	if(priv->pmib->dot1180211AuthEntry.dot11EnablePSK || priv->pmib->dot118021xAuthEntry.dot118021xAlgrthm)//OPENWRT_RADIUS 
-		rtl_net80211_setmlme(priv->dev, &mlme);
+		err = rtl_net80211_setmlme(priv->dev, &mlme);
 
 realtek_cfg80211_change_station_end:
 	NLEXIT;
@@ -4880,18 +5058,20 @@ static void realtek_set_band(struct rtl8192cd_priv *priv, struct cfg80211_beacon
 
 #ifdef WIFI_WMM
 		/* Check if WMM is set */
+		size_t wmm_offset = 0;
 		p = beacon->tail;
 		for (;;) 
 		{
-			p = get_ie(p, _RSN_IE_1_, &len, beacon->tail_len);
+			p = get_ie(beacon->tail + wmm_offset, _RSN_IE_1_, &len,
+				   beacon->tail_len - wmm_offset);
 			if (p)
 			{
-				if (!memcmp(p+2, WMM_PARA_IE, 6))
+				if (len >= 6 && !memcmp(p+2, WMM_PARA_IE, 6))
 				{
 					wmm_support = true;
 					NDEBUG(" WMM is supported\n");
 #ifdef WMM_APSD
-					if (*(p+8) & BIT(7))
+					if (len >= 7 && (*(p+8) & BIT(7)))
 					{
 						uapsd_support = true;
 						NDEBUG(" U-APSD is supported\n");
@@ -4905,7 +5085,7 @@ static void realtek_set_band(struct rtl8192cd_priv *priv, struct cfg80211_beacon
 				NDEBUG("_RSN_IE_1_ cannot be found\n");
 				break;
 			}
-			p = p + len + 2;
+			wmm_offset = p - beacon->tail + len + 2;
 		}
 #endif
 
@@ -4944,6 +5124,8 @@ static void realtek_set_band(struct rtl8192cd_priv *priv, struct cfg80211_beacon
 			if (valid_len < 0) goto check_end;
 
 			/* rsn cap */
+			if (valid_len < sizeof(DOT11_RSN_CAPABILITY))
+				goto check_end;
 			pDot11RSNCapability = (DOT11_RSN_CAPABILITY *)p;
 			if (pDot11RSNCapability->field.MFPC && pDot11RSNCapability->field.MFPR)
 				dot11IEEE80211W = MGMT_FRAME_PROTECTION_REQUIRED;
@@ -5092,8 +5274,13 @@ static int realtek_start_ap(struct wiphy *wiphy, struct net_device *dev,
 	if ((OPMODE & (WIFI_AP_STATE | WIFI_ADHOC_STATE)) == 0) //wrt-adhoc
 		return -EOPNOTSUPP;
 
-	if (info->ssid == NULL)
+	if (info->ssid == NULL || info->ssid_len > 32 ||
+	    info->ssid_len > sizeof(SSID))
 		return -EINVAL;
+
+	ret = realtek_validate_beacon(priv, &info->beacon);
+	if (ret)
+		return ret;
 
 	scan_req_pending = priv->scan_req;
 
@@ -7574,6 +7761,8 @@ static int realtek_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 		NDEBUG2("param is NULL CHK!!\n");
 		return -EPERM;
 	}
+	if (!params->buf || params->len < WLAN_HDR_A3_LEN)
+		return -EINVAL;
 	if(params->chan){
 		tx_ch = ieee80211_frequency_to_channel(params->chan->center_freq);
 		NDEBUG2("tx_ch [%d]\n",tx_ch);
@@ -7583,6 +7772,16 @@ static int realtek_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 	}
 	
 	mgmt = (struct ieee80211_mgmt *)params->buf;
+
+	if (ieee80211_is_auth(mgmt->frame_control)) {
+		size_t body_offset = WLAN_HDR_A3_LEN + sizeof(mgmt->u.auth);
+
+		if (params->len < body_offset)
+			return -EINVAL;
+		if (le16_to_cpu(mgmt->u.auth.auth_alg) == _AUTH_ALGM_SAE_ &&
+		    params->len - body_offset > sizeof(sta_info->sae_ie))
+			return -EMSGSIZE;
+	}
 
 	//NDEBUG("frame control=0x%x\n", le16_to_cpu(mgmt->frame_control));
 
@@ -8615,10 +8814,15 @@ void realtek_process_cfg80211_event(unsigned long task_priv)
 	struct rtl8192cd_priv *priv = (struct rtl8192cd_priv *)task_priv;
 	struct list_head *head = &priv->pshare->cfg80211_queue;
 	unsigned long flags;
-	struct CFG80211_RX_MGMT_IND *entry, *next;
+	struct CFG80211_RX_MGMT_IND *entry;
 
-	list_for_each_entry_safe(entry, next, head, list) {
+	for (;;) {
 		spin_lock_irqsave(&priv->pshare->cfg80211_queue_lock, flags);
+		if (list_empty(head)) {
+			spin_unlock_irqrestore(&priv->pshare->cfg80211_queue_lock, flags);
+			break;
+		}
+		entry = list_first_entry(head, struct CFG80211_RX_MGMT_IND, list);
 		list_del_init(&entry->list);
 		spin_unlock_irqrestore(&priv->pshare->cfg80211_queue_lock, flags);
 		
@@ -8634,11 +8838,15 @@ void realtek_enqueue_cfg80211_event(struct rtl8192cd_priv *priv, struct rx_frinf
 	unsigned char *pframe = get_pframe(pfrinfo);
 	struct CFG80211_RX_MGMT_IND *ind = NULL;
 
+	if (pfrinfo->pktlen > sizeof(ind->buf)) {
+		pr_warn_ratelimited("rtl8192cd: dropping oversized cfg80211 management frame (%u bytes)\n",
+				    pfrinfo->pktlen);
+		return;
+	}
 	ind = (struct CFG80211_RX_MGMT_IND *)kmalloc(sizeof(struct CFG80211_RX_MGMT_IND), GFP_ATOMIC);
-	memset(ind, 0, sizeof(struct CFG80211_RX_MGMT_IND));
-
 	if (!ind)
-		return;	
+		return;
+	memset(ind, 0, sizeof(struct CFG80211_RX_MGMT_IND));
 
 	INIT_LIST_HEAD(&ind->list);
 	ind->wdev = &priv->wdev;
@@ -8646,11 +8854,6 @@ void realtek_enqueue_cfg80211_event(struct rtl8192cd_priv *priv, struct rx_frinf
 		ind->freq = ieee80211_channel_to_frequency(channel, IEEE80211_BAND_2GHZ);
 	else
 		ind->freq = ieee80211_channel_to_frequency(channel, IEEE80211_BAND_5GHZ);
-	if(sizeof(ind->buf) < pfrinfo->pktlen ){
-		printk("WARNING!! Please increase buffer size of"
-			"CFG80211_RX_MGMT_IND, pkt size:%d, buf size:%d\n",
-			pfrinfo->pktlen, (sizeof(ind->buf)));
-	}
 	memcpy(ind->buf, pframe, pfrinfo->pktlen);
 	ind->len = pfrinfo->pktlen;
 	ind->flags = answered;

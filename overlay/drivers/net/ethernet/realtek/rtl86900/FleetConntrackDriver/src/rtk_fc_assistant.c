@@ -16,6 +16,8 @@
 #include <linux/inet.h>
 #include <linux/in.h>
 #include <linux/ip.h>
+#include <linux/mutex.h>
+#include <linux/srcu.h>
 #include <net/addrconf.h>
 #include <net/netfilter/nf_conntrack.h>
 #ifdef CONFIG_RTK_FC_TCP_SPI_SUPPORT
@@ -92,265 +94,224 @@ bool (*g_nf_ct_get_tuple)(const struct sk_buff *skb,
 #endif
 
 static rtk_fc_export_symbol_t fc_ext_symbols;
+static rtk_fc_export_symbol_t *fc_ext_active_symbols;
+static DEFINE_MUTEX(fc_ext_symbols_mutex);
+DEFINE_SRCU(fc_ext_symbols_srcu);
 
 int rtk_fc_ext_symbol_register(rtk_fc_export_symbol_t *ext_symbol)
 {
+	if (!ext_symbol)
+		return -EINVAL;
+
+	mutex_lock(&fc_ext_symbols_mutex);
+	if (fc_ext_active_symbols) {
+		mutex_unlock(&fc_ext_symbols_mutex);
+		return -EBUSY;
+	}
 	memcpy(&fc_ext_symbols, ext_symbol, sizeof(rtk_fc_export_symbol_t));
+	smp_store_release(&fc_ext_active_symbols, &fc_ext_symbols);
+	mutex_unlock(&fc_ext_symbols_mutex);
 
 	return 0;
 }
 
+void rtk_fc_ext_symbol_unregister(void)
+{
+	mutex_lock(&fc_ext_symbols_mutex);
+	smp_store_release(&fc_ext_active_symbols, NULL);
+	/* Readers may sleep inside the callback, so ordinary RCU is insufficient. */
+	synchronize_srcu(&fc_ext_symbols_srcu);
+	memset(&fc_ext_symbols, 0, sizeof(fc_ext_symbols));
+	mutex_unlock(&fc_ext_symbols_mutex);
+}
+
+#define FC_EXT_DISPATCH(member, fallback, ...) ({ \
+	int __idx = srcu_read_lock(&fc_ext_symbols_srcu); \
+	rtk_fc_export_symbol_t *__symbols = \
+		smp_load_acquire(&fc_ext_active_symbols); \
+	int __result = (fallback); \
+	if (__symbols && __symbols->member) \
+		__result = __symbols->member(__VA_ARGS__); \
+	srcu_read_unlock(&fc_ext_symbols_srcu, __idx); \
+	__result; \
+})
+
 int rtk_fc_wlan_register(rtk_fc_wlan_devidx_t wlanDevIdx, struct net_device *dev)
 {
-	if(fc_ext_symbols._rtk_fc_wlan_register)
-		return fc_ext_symbols._rtk_fc_wlan_register(wlanDevIdx, dev);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wlan_register, -1, wlanDevIdx, dev);
 }
 
 int rtk_fc_igmp_mdb_callback_register(fc_igmp_mdb_callback searchMdbFunc)
 {
-	if(fc_ext_symbols._rtk_fc_igmp_mdb_callback_register)
-		return fc_ext_symbols._rtk_fc_igmp_mdb_callback_register(searchMdbFunc);
-	else
-		return -1;
-
+	return FC_EXT_DISPATCH(_rtk_fc_igmp_mdb_callback_register, -1,
+				searchMdbFunc);
 }
 
 int rtk_fc_igmp_mdb_callback_unregister(void)
 {
-	if(fc_ext_symbols._rtk_fc_igmp_mdb_callback_unregister)
-		return fc_ext_symbols._rtk_fc_igmp_mdb_callback_unregister();
-	else
-		return -1;
-
+	return FC_EXT_DISPATCH(_rtk_fc_igmp_mdb_callback_unregister, -1);
 }
 
 
 
 int rtk_fc_wlan_devMask2RtmbssidMask(rtk_fc_wlan_devmask_t *wlanDevIdMask, rt_wlan_mbssid_mask_t *rtWlanMbssidMsk)
 {
-	if(fc_ext_symbols._rtk_fc_wlan_devMask2RtmbssidMask)
-		return fc_ext_symbols._rtk_fc_wlan_devMask2RtmbssidMask(wlanDevIdMask, rtWlanMbssidMsk);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wlan_devMask2RtmbssidMask, -1,
+				wlanDevIdMask, rtWlanMbssidMsk);
 }
 int rtk_fc_dev2wlanDevIdx(struct net_device *dev, rtk_fc_wlan_devidx_t *wlan_dev_idx)
 {
-	if(fc_ext_symbols._rtk_fc_dev2wlanDevIdx)
-		return fc_ext_symbols._rtk_fc_dev2wlanDevIdx(dev, wlan_dev_idx);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_dev2wlanDevIdx, -1, dev, wlan_dev_idx);
 }
 int rtk_fc_dev_get_realdev_phyport(struct net_device *dev, rtk_fc_realdev_t *rdev)
 {
-	if(fc_ext_symbols._rtk_fc_dev_get_realdev_phyport)
-		return fc_ext_symbols._rtk_fc_dev_get_realdev_phyport(dev, rdev);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_dev_get_realdev_phyport, -1, dev, rdev);
 }
 
 int fwdEngine_wifi_rx(struct sk_buff *skb)
 {
-	if(fc_ext_symbols._rtk_fc_skb_wifi_rx)
-		return fc_ext_symbols._rtk_fc_skb_wifi_rx(skb);
-	else
-		return RE8670_RX_CONTINUE;
+	return FC_EXT_DISPATCH(_rtk_fc_skb_wifi_rx, RE8670_RX_CONTINUE, skb);
 }
 
 int rtk_fc_skb_wifi_rx(struct sk_buff *skb)
 {
-	if(fc_ext_symbols._rtk_fc_skb_wifi_rx)
-		return fc_ext_symbols._rtk_fc_skb_wifi_rx(skb);
-	else
-		return RE8670_RX_CONTINUE;
+	return FC_EXT_DISPATCH(_rtk_fc_skb_wifi_rx, RE8670_RX_CONTINUE, skb);
 }
 
 int rtk_fc_fastfwd_netif_rx(struct sk_buff *skb)
 {
-	if(fc_ext_symbols._rtk_fc_fastfwd_netif_rx)
-		return fc_ext_symbols._rtk_fc_fastfwd_netif_rx(skb);
-	else
-		return RE8670_RX_CONTINUE;
+	return FC_EXT_DISPATCH(_rtk_fc_fastfwd_netif_rx,
+				RE8670_RX_CONTINUE, skb);
 }
 
 gro_result_t rtk_fc_fastfwd_napi_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
 {
-	if(fc_ext_symbols._rtk_fc_fastfwd_napi_gro_receive)
-		return fc_ext_symbols._rtk_fc_fastfwd_napi_gro_receive(napi, skb);
-	else
-		return RE8670_RX_CONTINUE;
+	return FC_EXT_DISPATCH(_rtk_fc_fastfwd_napi_gro_receive,
+				RE8670_RX_CONTINUE, napi, skb);
 }
 
 int rtk_fc_wifi_amsdu_pe_offload_mac_id_set(unsigned int mac_id, rtk_fc_wifi_amsdu_pe_offload_sta_conf_sel_t sta_conf_sel, rtk_fc_wifi_amsdu_pe_offload_sta_info_t sta_conf, unsigned char* mac_addr)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_mac_id_set)
-		return fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_mac_id_set(mac_id, sta_conf_sel, sta_conf, mac_addr);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_amsdu_pe_offload_mac_id_set, -1,
+				mac_id, sta_conf_sel, sta_conf, mac_addr);
 }
 
 int rtk_fc_wifi_amsdu_pe_offload_mac_id_del(unsigned int mac_id)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_mac_id_del)
-		return fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_mac_id_del(mac_id);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_amsdu_pe_offload_mac_id_del,
+				-1, mac_id);
 }
 
 int rtk_fc_wifi_amsdu_pe_offload_mac_id_flush(void)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_mac_id_flush)
-		return fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_mac_id_flush();
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_amsdu_pe_offload_mac_id_flush,
+				-1);
 }
 
 int rtk_fc_wifi_amsdu_pe_offload_mode_set(rtk_fc_wifi_amsdu_pe_offload_mode_t mode)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_mode_set)
-		return fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_mode_set(mode);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_amsdu_pe_offload_mode_set,
+				-1, mode);
 }
 
 int rtk_fc_wifi_amsdu_pe_offload_mode_get(rtk_fc_wifi_amsdu_pe_offload_mode_t *mode)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_mode_get)
-		return fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_mode_get(mode);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_amsdu_pe_offload_mode_get,
+				-1, mode);
 }
 
 int rtk_fc_wifi_dev_attr_set(struct net_device *dev, rtk_fc_wifi_dev_attr_t attr)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_dev_attr_set)
-		return fc_ext_symbols._rtk_fc_wifi_dev_attr_set(dev, attr);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_dev_attr_set, -1, dev, attr);
 }
 
 int rtk_fc_wifi_dev_attr_get(struct net_device *dev, rtk_fc_wifi_dev_attr_t *attr)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_dev_attr_get)
-		return fc_ext_symbols._rtk_fc_wifi_dev_attr_get(dev, attr);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_dev_attr_get, -1, dev, attr);
 }
 
 int rtk_fc_wifi_dev_to_devidx_get(struct net_device *dev, unsigned int *wlan_dev_idx)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_dev_to_devidx_get)
-		return fc_ext_symbols._rtk_fc_wifi_dev_to_devidx_get(dev, wlan_dev_idx);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_dev_to_devidx_get,
+				-1, dev, wlan_dev_idx);
 }
 
 int rtk_fc_wifi_event_handling_cb_register(rtk_fc_wifi_event_handling_callback pfunc)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_event_handling_cb_register)
-		return fc_ext_symbols._rtk_fc_wifi_event_handling_cb_register(pfunc);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_event_handling_cb_register,
+				-1, pfunc);
 }
 
 #if 1 // backward compatible but to be removed.
 int rtk_fc_wifi_client_mode_cb_register(rtk_fc_wifi_callback pfunc)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_client_mode_cb_register)
-		return fc_ext_symbols._rtk_fc_wifi_client_mode_cb_register(pfunc);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_client_mode_cb_register,
+				-1, pfunc);
 }
 
 int rtk_fc_wifi_dmacHandle_cb_register(rtk_fc_wifi_dmacHandle_callback pfunc)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_dmacHandle_cb_register)
-		return fc_ext_symbols._rtk_fc_wifi_dmacHandle_cb_register(pfunc);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_dmacHandle_cb_register,
+				-1, pfunc);
 }
 #endif
 
 int rtk_fc_wifi_amsdu_pe_offload_wifiPri_to_amsduQ_set(unsigned int wifi_pri, rtk_fc_wifi_amsdu_pe_queueid_t amsdu_qid)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_wifiPri_to_amsduQ_set)
-		return fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_wifiPri_to_amsduQ_set(wifi_pri, amsdu_qid);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_amsdu_pe_offload_wifiPri_to_amsduQ_set,
+				-1, wifi_pri, amsdu_qid);
 }
 
 int rtk_fc_wifi_amsdu_pe_offload_wifiPri_to_amsduQ_get(unsigned int wifi_pri, rtk_fc_wifi_amsdu_pe_queueid_t *amsdu_qid)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_wifiPri_to_amsduQ_get)
-		return fc_ext_symbols._rtk_fc_wifi_amsdu_pe_offload_wifiPri_to_amsduQ_get(wifi_pri, amsdu_qid);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_amsdu_pe_offload_wifiPri_to_amsduQ_get,
+				-1, wifi_pri, amsdu_qid);
 }
 
 int rtk_fc_wifi_ipDscp_to_wifiPri_set(unsigned int ip_dscp, unsigned int wifi_pri)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_ipDscp_to_wifiPri_set)
-		return fc_ext_symbols._rtk_fc_wifi_ipDscp_to_wifiPri_set(ip_dscp, wifi_pri);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_ipDscp_to_wifiPri_set,
+				-1, ip_dscp, wifi_pri);
 }
 
 int rtk_fc_wifi_ipDscp_to_wifiPri_get(unsigned int ip_dscp, unsigned int *wifi_pri)
 {
-	if(fc_ext_symbols._rtk_fc_wifi_ipDscp_to_wifiPri_get)
-		return fc_ext_symbols._rtk_fc_wifi_ipDscp_to_wifiPri_get(ip_dscp, wifi_pri);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_wifi_ipDscp_to_wifiPri_get,
+				-1, ip_dscp, wifi_pri);
 }
 
 #if defined(CONFIG_RTK_FC_CRYPTO_OFFLOAD_BY_PE) && defined(CONFIG_REALTEK_IPC2RCPU)
 int rtk_fc_crypto_set_src_desc(unsigned int first_dw, unsigned int second_dw)
 {
-	if(fc_ext_symbols._rtk_fc_crypto_set_src_desc)
-		return fc_ext_symbols._rtk_fc_crypto_set_src_desc(first_dw, second_dw);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_crypto_set_src_desc,
+				-1, first_dw, second_dw);
 }
 
 int rtk_fc_crypto_set_dst_desc(unsigned int first_dw, unsigned int second_dw, unsigned char start, unsigned char end)
 {
-	if(fc_ext_symbols._rtk_fc_crypto_set_dst_desc)
-		return fc_ext_symbols._rtk_fc_crypto_set_dst_desc(first_dw, second_dw, start, end);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_crypto_set_dst_desc,
+				-1, first_dw, second_dw, start, end);
 }
 
 int rtk_fc_crypto_ps_pop_done(void)
 {
-	if(fc_ext_symbols._rtk_fc_crypto_ps_pop_done)
-		return fc_ext_symbols._rtk_fc_crypto_ps_pop_done();
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_crypto_ps_pop_done, -1);
 }
 
 int rtk_fc_crypto_send_desc(void)
 {
-	if(fc_ext_symbols._rtk_fc_crypto_send_desc)
-		return fc_ext_symbols._rtk_fc_crypto_send_desc();
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_crypto_send_desc, -1);
 }
 
 int rtk_fc_crypto_wait_put_desc_done(void)
 {
-	if(fc_ext_symbols._rtk_fc_crypto_wait_put_desc_done)
-		return fc_ext_symbols._rtk_fc_crypto_wait_put_desc_done();
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_crypto_wait_put_desc_done, -1);
 }
 
 int rtk_fc_crypto_register_hw_crypto_ready_cnt_callback(rtk_fc_crypto_hw_crypto_ready_cnt_callback cb_func)
 {
-	if(fc_ext_symbols._rtk_fc_crypto_register_hw_crypto_ready_cnt_callback)
-		return fc_ext_symbols._rtk_fc_crypto_register_hw_crypto_ready_cnt_callback(cb_func);
-	else
-		return -1;
+	return FC_EXT_DISPATCH(_rtk_fc_crypto_register_hw_crypto_ready_cnt_callback,
+				-1, cb_func);
 }
 #endif
 
@@ -580,9 +541,12 @@ int  rtk_fc_neigh_for_each_read(struct neigh_table *tbl, int (*cb)(struct neighb
 	int ret = -1;
 
 	rtk_fc_g_rcu_read_lock_bh();
+	/* Rehash moves each neighbour's hash link between buckets. Pin the
+	 * table for a complete existence scan, as neigh_for_each() does.
+	 */
+	spin_lock(&tbl->lock);
 	nht = rcu_dereference_bh(tbl->nht);
 
-	read_lock(&tbl->lock); /* avoid resizes */
 	for (chain = 0; chain < (1 << nht->hash_shift); chain++) {
 		struct neighbour *n;
 
@@ -594,7 +558,7 @@ int  rtk_fc_neigh_for_each_read(struct neigh_table *tbl, int (*cb)(struct neighb
 		if(ret == 0)
 			break;
 	}
-	read_unlock(&tbl->lock);
+	spin_unlock(&tbl->lock);
 	rtk_fc_g_rcu_read_unlock_bh();
 
 	return ret;
@@ -750,6 +714,7 @@ EXPORT_SYMBOL(_flowEntryDataPool);
 #endif
 
 EXPORT_SYMBOL(rtk_fc_ext_symbol_register);
+EXPORT_SYMBOL(rtk_fc_ext_symbol_unregister);
 
 EXPORT_SYMBOL(rtk_fc_wlan_register);
 EXPORT_SYMBOL(rtk_fc_wlan_devMask2RtmbssidMask);
@@ -819,4 +784,3 @@ EXPORT_SYMBOL(rtk_fc_g_nf_ct_iterate_cleanup);
 EXPORT_SYMBOL(rtk_fc_g_nf_ct_get_tuple);
 #endif
 EXPORT_SYMBOL(rtk_fc_g_ct_helper_exist_check);
-

@@ -12769,30 +12769,25 @@ index: the information element id index, limit is the limit for search
  */
  unsigned char *get_ie(unsigned char *pbuf, int index, int *len, int limit)
 {
-	unsigned int tmp,i;
-	unsigned char *p;
+	int offset = 0;
 
-	if (limit < 1)
+	if (!len)
+		return NULL;
+	*len = 0;
+	if (!pbuf || limit < 2)
 		return NULL;
 
-	p = pbuf;
-	i = 0;
-	*len = 0;
-	while(1)
-	{
-		if (*p == index)
-		{
-			*len = *(p + 1);
-			return (p);
+	while (limit - offset >= 2) {
+		unsigned int ie_len = pbuf[offset + 1];
+
+		/* Reject a truncated element, including a matching one. */
+		if (ie_len > limit - offset - 2)
+			return NULL;
+		if (pbuf[offset] == index) {
+			*len = ie_len;
+			return pbuf + offset;
 		}
-		else
-		{
-			tmp = *(p + 1);
-			p += (tmp + 2);
-			i += (tmp + 2);
-		}
-		if (i >= limit)
-			break;
+		offset += ie_len + 2;
 	}
 	return NULL;
 }
@@ -30235,9 +30230,11 @@ OnAssocReqSuccess:
 		FTDEBUG("offload ft-assoc-req to hostapd\n");
 	} else
 #endif
-#ifdef RTK_NL80211
-	if (!pstat->has_pmkid)
-#endif
+	/* This driver advertises an in-device AP SME. Upstream nl80211
+	 * hostapd receives NEW_STATION and has no vendor sta_assoc callback
+	 * to supply a delayed response. A PMKID must not suppress our reply:
+	 * hostapd still validates the PMKID before authorizing data traffic.
+	 */
 	{
 		if (frame_type == WIFI_ASSOCREQ)
 			issue_asocrsp(priv, status, pstat, WIFI_ASSOCRSP, assoc_disallowed_status);
@@ -32091,6 +32088,9 @@ unsigned int OnAuth(struct rtl8192cd_priv *priv, struct rx_frinfo *pfrinfo)
 	struct aid_obj *aidobj;
 	int j;
 
+	/* Header, algorithm, transaction and status must precede any parsing. */
+	if (pfrinfo->pktlen < WLAN_HDR_A3_LEN + 6)
+		return FAIL;
 	pmib = GET_MIB(priv);
 
 #if defined(CONFIG_RTK_MESH) && defined(MESH_BOOTSEQ_AUTH)
@@ -32098,6 +32098,8 @@ unsigned int OnAuth(struct rtl8192cd_priv *priv, struct rx_frinfo *pfrinfo)
 #endif
 	acl_mode = priv->pmib->dot11StationConfigEntry.dot11AclMode;
 	pframe = get_pframe(pfrinfo);
+	if (GetPrivacy(pframe) && pfrinfo->pktlen < WLAN_HDR_A3_LEN + 4 + 6)
+		return FAIL;
 	sa = GetAddr2Ptr(pframe);
 	pstat = get_stainfo(priv, sa);
 	log("[%s]",priv->dev->name);
@@ -32853,7 +32855,7 @@ def RTK_MULTI_AP
 
 #ifdef RTK_NL80211
 	if (peer_auth_type == _AUTH_ALGM_SAE_) {
-		int freq, channel, status;
+		int freq, channel;
 		struct wireless_dev *wdev;
 		wdev = (&priv->wdev);
 		channel = priv->pmib->dot11RFEntry.dot11channel;
@@ -32874,23 +32876,12 @@ def RTK_MULTI_AP
 		pstat->state |= WIFI_AUTH_SUCCESS;
 		pstat->AuthAlgrthm = peer_auth_type;
 
-		if (pstat->wpa_sta_info->commit_len == 0 || pfrinfo->pktlen >= 256)
-			status = 1;
-		else if (pstat->wpa_sta_info->commit_len == pfrinfo->pktlen
-			&& memcmp(pstat->wpa_sta_info->commit_ie+WLAN_HDR_A3_LEN,
-				pframe+WLAN_HDR_A3_LEN, pfrinfo->pktlen-WLAN_HDR_A3_LEN) == 0)
-			status = 0;
-		else
-			status = 2;
-
-		if (status) {
-			memcpy(pstat->wpa_sta_info->commit_ie, pframe, pfrinfo->pktlen);
-			pstat->wpa_sta_info->commit_len = pfrinfo->pktlen;
-			cfg80211_rx_mgmt(wdev , freq , 0 , pframe , pfrinfo->pktlen , GFP_ATOMIC);
-		}
-		else {
-			DEBUG_INFO("SAE: SKIP the same commit\n");
-		}
+		/* Hostapd owns SAE retransmission and anti-clogging state. An
+		 * identical Commit or Confirm can be a retry after our response
+		 * was lost; suppressing it here prevents hostapd from responding
+		 * again. Pass the complete frame without a fixed-size cache.
+		 */
+		cfg80211_rx_mgmt(wdev, freq, 0, pframe, pfrinfo->pktlen, GFP_ATOMIC);
 		RESTORE_INT(flags);
 		return SUCCESS;
 	}
@@ -42307,4 +42298,3 @@ void ra_offset_training(struct rtl8192cd_priv *priv)
 		priv->pshare->ra_training_to--;
 }
 #endif
-
