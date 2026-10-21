@@ -3,7 +3,7 @@
 Mainline/bleeding-edge Linux board support for Realtek **RTL9607C / RTL9607Cv2**
 (big-endian MIPS32r2 interAptiv, MIPS CPS + MT SMP / 4 VPEs, GIC).
 
-The current default kernel is **Linux 7.3-rc3**. This repository is the forward-port
+The current default kernel is **Linux 7.3 final**. This repository is the forward-port
 line for Phoebus-OS; hardware debugging is done first on the
 [6.18 LTS BSP](https://github.com/martiancomputer/PhoebusBSP-6), then carried
 forward here.
@@ -15,6 +15,12 @@ Shared vendor code, userspace, provisioning and tooling live in
 ## Verification boundary
 
 Linux **7.3-rc3 has been booted and exercised on the RTL9607C hardware**.
+
+Linux 7.3 final has now booted with WPA3 connections on both radios after
+correcting firewall startup and preserving hostapd's RSN element in the 2.4 GHz
+driver. The later hwmon parent-device fix still needs sensor validation on the
+board. Off-device logging preserves evidence for the separate long-run freeze
+and FC internal-table exhaustion investigations; neither is declared solved.
 
 The current mainline image completed a roughly **5-hour continuous hardware run**
 with the kernel and router userspace active. The run ended when the Linux
@@ -109,11 +115,12 @@ git submodule update --init
 Current default:
 
 ```
-KVER=7.3-rc3
+KVER=7.3
 ```
 
 Release candidates are cloned from Linus's kernel.org Git tree; stable releases
-use kernel.org tarballs. A different mainline version can be selected with
+use kernel.org tarballs, falling back to the official Git release tag when a
+new tag precedes CDN publication. A different mainline version can be selected with
 `KVER=...`.
 
 Host packages:
@@ -150,6 +157,58 @@ discovers all four logical VPEs; its network panel can select each LAN/WAN
 netdev, including bridge members without individual IP addresses. See the
 SDK's resource-monitor section for runtime-library, UTF-8 and hardware-offload
 counter limitations. Host GNU `localedef` is required for the UTF-8 locale.
+
+### Off-device diagnostics
+
+The default LAN is `10.1.0.0/24`, router `10.1.0.1`. DHCP allocates `.100` through
+`.171`; higher addresses remain available for statically configured infrastructure.
+All physical LAN sockets remain members of the same bridge.
+
+Copy `sdk/rootfs/etc/phoebus-telemetry.conf` into the ignored
+`sdk/secrets/telemetry.env`, and set `REMOTE_LOG_HOST` to a trusted wired collector.
+The build installs that private configuration with mode 0600. Public builds with
+no configured destination do not send logs to an arbitrary host.
+
+Run the unprivileged collector on the wired host:
+
+```sh
+python3 tools/phoebus-log-receiver.py --listen "$COLLECTOR_IP" \
+    --router "$ROUTER_IP" --directory "$PRIVATE_LOG_DIR"
+```
+
+It listens on UDP 1514 (system/health), 6666 (kernel records), and 6667 (optional
+netconsole). Logs are separate rotating JSONL files with receive timestamps,
+private permissions and periodic fsync. The receiver filters source addresses;
+UDP logs are not encrypted/authenticated and belong on a trusted wired network.
+
+Logging is an optional `logging` service bundle, not a dependency of core
+networking or the local system logger. Configure the collector after the base
+network has been validated, restart `syslogd`, then start it explicitly:
+
+```sh
+s6-svc -r /run/service/syslogd
+s6-rc -l /run/s6-rc/live -u change logging
+```
+
+When enabled, the router forwards system messages, independently relays `/dev/kmsg` including
+boot history, and emits bounded memory/conntrack/CPU/network/task counters. It
+does not read credential files, process environments, full command lines or packet
+payloads. Raw kernel/system messages can still contain sensitive data and must
+remain private. Logging UDP is marked untracked before conntrack so table exhaustion
+does not itself prevent those messages being sent. No automatic FC flush,
+module unload, reboot or panic injection is performed.
+
+Netconsole support is built but remains opt-in: the vendor NIC's panic-time
+polling path needs board validation with UART available. After that validation,
+`NETCONSOLE_IFACE=auto` resolves the collector's bridge FDB entry to a wired LAN
+member rather than guessing a socket-to-netdev mapping or broadcasting logs.
+Neither UDP nor netconsole can guarantee a final message if the NIC or all CPUs
+are already locked; an independently recorded UART is still the stronger fallback.
+
+btop labels the CPU/VPEs and discovers the read-only `rtl9607c` hwmon SoC sensor.
+The driver uses the initialized SDK getter with cached eFuse correction. One
+package reading is exposed, not invented per-VPE temperatures or a guessed
+critical threshold. No verified board power/energy interface is currently exposed.
 
 ## RAM boot
 

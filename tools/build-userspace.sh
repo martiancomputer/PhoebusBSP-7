@@ -32,10 +32,7 @@ STAGING="$WORK/staging"
 
 # --- locate the vendor GPL drop -------------------------------------------
 if [ -z "$VENDOR_SDK" ]; then
-	for c in "$BSP/../OpenWRT1500/rtl8198d-sdk-main" \
-	         "$BSP/../Luna_Project/GPL-Sources/rtl8198d-sdk-main" \
-	         "$HOME/Luna_Project/GPL-Sources/rtl8198d-sdk-main" \
-	         "$HOME/OpenWRT1500/rtl8198d-sdk-main" \
+	for c in "$WORK/vendor-cache" "$BSP/../vendor-sdk" \
 	         "$BSP/../rtl8198d-sdk-main"; do
 		[ -d "$c/user" ] && { VENDOR_SDK=$(cd "$c" && pwd); break; }
 	done
@@ -256,7 +253,10 @@ fetch_source "iptables-$IPTABLES_VER" "$IPTABLES_URL" "$IPTABLES_SHA256" \
   # asm/rwonce.h; the sysroot's exported headers are the right ones.
   PKG_CONFIG_LIBDIR="$STAGING/lib/pkgconfig" \
   ./configure --host="$HOST" --prefix="$STAGING" \
-              --disable-nftables --disable-shared --enable-static --disable-ipv6 >/dev/null
+              --disable-nftables --disable-shared --enable-static --enable-ipv6 >/dev/null
+  # Enabling IPv6 changes dispatch-table compiler flags, not source mtimes.
+  # Drop cached IPv4-only applet objects when upgrading an existing work tree.
+  make -C iptables clean >/dev/null
   # utils/nfnl_osf wants libnfnetlink and aborts the recursive build before it
   # reaches the binary, so build the pieces directly. libiptc first --
   # xtables-multi links ../libiptc/libip4tc.la and the top-level make never gets
@@ -267,7 +267,7 @@ fetch_source "iptables-$IPTABLES_VER" "$IPTABLES_URL" "$IPTABLES_SHA256" \
   make -C iptables   -j"$(nproc)" >/dev/null )
 cp "$WORK/iptables/iptables/xtables-legacy-multi" "$OUT/sbin/xtables-multi"
 ${CROSS_COMPILE}strip "$OUT/sbin/xtables-multi" 2>/dev/null || true
-for t in iptables iptables-save iptables-restore; do
+for t in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
 	ln -sf xtables-multi "$OUT/sbin/$t"
 done
 cp -a "$SYSROOT/lib/libresolv.so.2" "$OUT/lib/" 2>/dev/null || true
@@ -417,7 +417,7 @@ for svc in $(cat "$OUT/etc/s6/source/ok-all/contents" 2>/dev/null); do
 	           "$(grep -oE '\b(hostapd|hostapd_cli|dropbear|dropbearkey|iptables|udhcpd|udhcpc|syslogd|klogd|brctl|ip)\b' "$run")" \
 	           | grep -v '^$' | sort -u); do
 		found=0
-		for d in bin sbin usr/bin usr/sbin; do
+		for d in bin sbin usr/bin usr/sbin usr/libexec; do
 			[ -e "$OUT/$d/$w" ] && { found=1; break; }
 		done
 		[ "$found" = 1 ] || { echo "  MISSING: $w (needed by service '$svc')" >&2; fail=1; }

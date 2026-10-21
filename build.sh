@@ -1,5 +1,5 @@
 #!/bin/sh
-# PhoebusBSP-7 — build a bootable mainline Linux 7.3-rc for RTL9607C/Cv2.
+# PhoebusBSP-7 — build a bootable mainline Linux 7.3 for RTL9607C/Cv2.
 #
 # Reconstructs the ported kernel tree from three ingredients:
 #   1. pristine upstream linux-${KVER} (downloaded)
@@ -8,11 +8,11 @@
 # then configures, builds, and packages a U-Boot image.
 #
 # Usage: ./build.sh              # full build -> images/
-#        KVER=7.3-rc4 ./build.sh # rebase onto another mainline release
+#        KVER=<version> ./build.sh # another release needs matching overlay review
 set -e
 
 BSP=$(cd "$(dirname "$0")" && pwd)
-KVER="${KVER:-7.3-rc3}"
+KVER="${KVER:-7.3}"
 KMAJ="${KVER%%.*}"                   # 7 -> cdn.kernel.org/pub/linux/kernel/v7.x
 SDK="$BSP/sdk"                       # Phoebus-SDK submodule
 WORK="$BSP/build"
@@ -40,6 +40,8 @@ fi
 "$SDK/scripts/fetch-toolchain.sh" "$BSP/toolchain"
 export PATH="$BSP/toolchain/mips32--glibc--stable-2025.08-1/bin:$PATH"
 export ARCH=mips CROSS_COMPILE
+# Keep builder identity out of distributable kernel metadata.
+export KBUILD_BUILD_USER=builder KBUILD_BUILD_HOST=build
 
 # --- 2. pristine kernel ---
 # Mainline release candidates are taken from Linus's official kernel.org Git
@@ -51,15 +53,22 @@ if [ ! -d "$PRISTINE" ]; then
 	*-rc*) git clone --depth 1 --branch "v$KVER" --single-branch \
 		       https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git \
 		       "$PRISTINE" ;;
-	*) [ -f "linux-$KVER.tar.xz" ] || curl -fL --retry 3 -O \
-		"https://cdn.kernel.org/pub/linux/kernel/v$KMAJ.x/linux-$KVER.tar.xz"
-		mkdir -p "$PRISTINE"
-		tar xf "linux-$KVER.tar.xz" -C "$PRISTINE" --strip-components=1 ;;
+	*) if [ -f "linux-$KVER.tar.xz" ] || curl -fL --retry 3 -O \
+		"https://cdn.kernel.org/pub/linux/kernel/v$KMAJ.x/linux-$KVER.tar.xz"; then
+			mkdir -p "$PRISTINE"
+			tar xf "linux-$KVER.tar.xz" -C "$PRISTINE" --strip-components=1
+		else
+			# New release tags can precede the CDN tarball publication.
+			git clone --depth 1 --branch "v$KVER" --single-branch \
+				https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git "$PRISTINE"
+		fi ;;
 	esac
 fi
 EXPECTED_KVER="$KVER"
 case "$KVER" in
 *-rc*) EXPECTED_KVER="${KVER%%-rc*}.0-rc${KVER##*-rc}" ;;
+*.*.*) ;;
+*) EXPECTED_KVER="$KVER.0" ;;
 esac
 test "$(make -s -C "$PRISTINE" kernelversion)" = "$EXPECTED_KVER" || {
 	echo "ERROR: pristine cache is not Linux $KVER: $PRISTINE" >&2
@@ -115,8 +124,9 @@ fi
 cp "$BSP/configs/rtl9607c.config" "$K/.config"
 # Point the built-in initramfs at the rootfs we just built. This overrides any
 # CONFIG_INITRAMFS_SOURCE value in the committed config (which must NOT carry a
-# machine-specific absolute path — that was a portability bug).
-sed -i "s|^CONFIG_INITRAMFS_SOURCE=.*|CONFIG_INITRAMFS_SOURCE=\"$WORK/rootfs-tree $SDK/rootfs/initramfs-devnodes.txt\"|" "$K/.config"
+# machine-specific absolute path — that was a portability bug). Keep this
+# relative in the generated config too: IKCONFIG embeds it in the image.
+sed -i 's|^CONFIG_INITRAMFS_SOURCE=.*|CONFIG_INITRAMFS_SOURCE="../rootfs-tree ../../sdk/rootfs/initramfs-devnodes.txt"|' "$K/.config"
 # host bc is required by the kernel build; the SDK ships a fallback if the host lacks it
 command -v bc >/dev/null 2>&1 || export PATH="$SDK/tools/hostbin:$PATH"
 make -C "$K" olddefconfig
