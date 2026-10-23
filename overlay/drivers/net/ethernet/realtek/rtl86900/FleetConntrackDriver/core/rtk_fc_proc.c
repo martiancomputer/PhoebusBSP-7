@@ -11498,7 +11498,8 @@ int rtk_fc_proc_wanPortMask_set(struct file *filp, const char *buff,unsigned lon
 
 	// MAC port as wan
 	portmask = simple_strtol(split_str, NULL, 0);
-	rtk_fc_wan_portmask_set(portmask);
+	if (rtk_fc_wan_portmask_set(portmask) != RTK_FC_RET_OK)
+		return -EIO;
 
 	// WLAN DEVIDX as wan
 	split_str=strsep(&strptr," ");	//get detail portmask setting
@@ -12994,6 +12995,7 @@ int rtk_fc_proc_hwnat_mode_selection_get(struct seq_file *s, void *v)
 int rtk_fc_proc_hwnat_mode_selection_set(struct file *filp, const char *buff, unsigned long count, void *data)
 {
 	int idx = _rtk_fc_proc_parsing_string_to_integer(buff, count);
+	int ret;
 
 	// backward compatible
 	if(idx == 100) idx = RT_FLOW_HWNAT_MODE_SPEC_TEST;
@@ -13002,12 +13004,16 @@ int rtk_fc_proc_hwnat_mode_selection_set(struct file *filp, const char *buff, un
 		goto ERR;
 
 	if(idx == RT_FLOW_HWNAT_MODE_TRAP_ALL){	//trap by acl to make sure sw only
-		assert_ok(_rtk_rg_aclAndCfReservedRuleAdd(RTK_FC_ACLANDCF_RESERVED_ALL_TRAP, NULL));
+		ret = _rtk_rg_aclAndCfReservedRuleAdd(RTK_FC_ACLANDCF_RESERVED_ALL_TRAP, NULL);
+		if (ret != RT_ERR_RG_OK)
+			return -EIO;
 #if defined(CONFIG_RTK_L34_G3_PLATFORM)
 		assert_ok(rtk_fc_asic_l2te_policer_enable_set(DISABLED));	//make sure not drop by L2 storm ctrl
 #endif
 	}else{
-		assert_ok(_rtk_rg_aclAndCfReservedRuleDel(RTK_FC_ACLANDCF_RESERVED_ALL_TRAP));
+		ret = _rtk_rg_aclAndCfReservedRuleDel(RTK_FC_ACLANDCF_RESERVED_ALL_TRAP);
+		if (ret != RT_ERR_RG_OK)
+			return -EIO;
 #if defined(CONFIG_RTK_L34_G3_PLATFORM)
 		assert_ok(rtk_fc_asic_l2te_policer_enable_set(ENABLED));
 #endif

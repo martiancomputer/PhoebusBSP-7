@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+
+#include "rtl9607c_soc.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/pwm/pwm.h>
+
+/ {
+	compatible = "rtk,9607c";
+	model = "TP-Link Archer AX10/AX1500 v3";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	/* Board wiring from the stock kernel DTB. GPIO PWM uses the physical
+	 * level directly; PWM polarity supplies the single active-low inversion.
+	 * 5 ms periods give 200 Hz dimming. Zero/full duty need no timer toggles.
+	 */
+	pwm_power: pwm-power {
+		compatible = "pwm-gpio";
+		#pwm-cells = <3>;
+		gpios = <&gpio0 0 GPIO_ACTIVE_HIGH>;
+	};
+	pwm_wlan2g: pwm-wlan2g {
+		compatible = "pwm-gpio";
+		#pwm-cells = <3>;
+		gpios = <&gpio0 1 GPIO_ACTIVE_HIGH>;
+	};
+	pwm_wlan5g: pwm-wlan5g {
+		compatible = "pwm-gpio";
+		#pwm-cells = <3>;
+		gpios = <&gpio0 25 GPIO_ACTIVE_HIGH>;
+	};
+	pwm_lan: pwm-lan {
+		compatible = "pwm-gpio";
+		#pwm-cells = <3>;
+		gpios = <&gpio0 16 GPIO_ACTIVE_HIGH>;
+	};
+	pwm_internet_green: pwm-internet-green {
+		compatible = "pwm-gpio";
+		#pwm-cells = <3>;
+		gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+	};
+	pwm_internet_orange: pwm-internet-orange {
+		compatible = "pwm-gpio";
+		#pwm-cells = <3>;
+		gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
+	};
+	pwm_wps: pwm-wps {
+		compatible = "pwm-gpio";
+		#pwm-cells = <3>;
+		gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+	};
+
+	leds {
+		compatible = "pwm-leds";
+		led_power: led-0 {
+			label = "power";
+			pwms = <&pwm_power 0 5000000 PWM_POLARITY_INVERTED>;
+			max-brightness = <255>;
+			default-state = "on";
+		};
+		led_wlan2g: led-1 {
+			label = "wlan2g";
+			pwms = <&pwm_wlan2g 0 5000000 PWM_POLARITY_INVERTED>;
+			max-brightness = <255>;
+			default-state = "off";
+		};
+		led_wlan5g: led-2 {
+			label = "wlan5g";
+			pwms = <&pwm_wlan5g 0 5000000 PWM_POLARITY_INVERTED>;
+			max-brightness = <255>;
+			default-state = "off";
+		};
+		led_lan: led-3 {
+			label = "lan";
+			pwms = <&pwm_lan 0 5000000 PWM_POLARITY_INVERTED>;
+			max-brightness = <255>;
+			default-state = "off";
+		};
+		led_internet_green: led-4 {
+			label = "internetgreen";
+			pwms = <&pwm_internet_green 0 5000000 PWM_POLARITY_INVERTED>;
+			max-brightness = <255>;
+			default-state = "off";
+		};
+		led_internet_orange: led-5 {
+			label = "internetorange";
+			pwms = <&pwm_internet_orange 0 5000000 PWM_POLARITY_INVERTED>;
+			max-brightness = <255>;
+			default-state = "off";
+		};
+		led_wps: led-6 {
+			label = "wps";
+			pwms = <&pwm_wps 0 5000000 PWM_POLARITY_INVERTED>;
+			max-brightness = <255>;
+			default-state = "off";
+		};
+	};
+
+	boot-leds {
+		compatible = "phoebus,boot-leds";
+		leds = <&led_power>, <&led_wlan2g>, <&led_wlan5g>, <&led_lan>,
+		       <&led_internet_green>, <&led_internet_orange>, <&led_wps>;
+	};
+
+	/* The engineering-board buttons used GPIO34, which is our orange LED. */
+	gpio-keys-polled {
+		compatible = "gpio-keys-polled";
+		poll-interval = <20>;
+		autorepeat;
+		reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+		};
+		wps {
+			label = "wps";
+			linux,code = <KEY_WPS_BUTTON>;
+			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	board_setting {
+		pci0_gpio_rst = <&gpio1 8 GPIO_ACTIVE_HIGH>;
+		pci1_gpio_rst = <&gpio1 7 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&gic {
+	timer {
+		compatible = "mti,gic-timer";
+		interrupts = <GIC_LOCAL 1 IRQ_TYPE_NONE>;
+		clocks = <&apro_soc_clk 0>;
+		clock-frequency = <900000000>;
+	};
+};
+
+&uart0 {
+	interrupt-parent = <&gic>;
+	interrupts = <GIC_SHARED GIC_EXT_UART0 IRQ_TYPE_LEVEL_HIGH>;
+};

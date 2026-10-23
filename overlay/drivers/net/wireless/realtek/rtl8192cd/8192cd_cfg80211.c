@@ -5268,6 +5268,16 @@ static int realtek_start_ap(struct wiphy *wiphy, struct net_device *dev,
 
 	NLENTER;
 
+	/* stop_ap closes the vendor hardware without clearing the networking
+	 * core's administrative UP state. A subsequent hostapd restart therefore
+	 * skips ndo_open and used to fail forever with -EIO until ip link was
+	 * cycled manually. Reopen only an administratively running interface.
+	 */
+	if (netif_running(dev) && !(priv->drv_state & DRV_STATE_OPEN)) {
+		ret = rtl8192cd_open(dev);
+		if (ret)
+			return ret;
+	}
 	if (!realtek_cfg80211_ready(priv))
 		return -EIO;
 
@@ -8365,6 +8375,15 @@ void rtk_remove_dev(struct rtknl *rtk,int idx)
 }
 
 
+/* Keep rtknl first: the rest of the vendor driver uses wiphy_priv() as rtknl.
+ * Bands share the rate/channel tables, but not RF-specific caps.
+ */
+struct realtek_wiphy_private {
+	struct rtknl rtk;
+	struct ieee80211_supported_band band_2g;
+	struct ieee80211_supported_band band_5g;
+};
+
 //struct rtknl *realtek_cfg80211_create(struct rtl8192cd_priv *priv)
 #ifdef RTK_129X_PLATFORM
 struct rtknl *realtek_cfg80211_create(struct device *dev)
@@ -8378,7 +8397,7 @@ struct rtknl *realtek_cfg80211_create(void)
 	//NLENTER;
 
 	/* create a new wiphy for use with cfg80211 */
-	wiphy = wiphy_new(&realtek_cfg80211_ops, sizeof(struct rtknl));
+	wiphy = wiphy_new(&realtek_cfg80211_ops, sizeof(struct realtek_wiphy_private));
 
 	if (!wiphy) {
 		printk("couldn't allocate wiphy device\n"); 
@@ -8564,6 +8583,14 @@ static const struct ieee80211_iface_combination rtk_5g_comb = {
 int realtek_cfg80211_init(struct rtknl *rtk,struct rtl8192cd_priv *priv)  
 {
 	struct wiphy *wiphy = rtk->wiphy;
+	struct realtek_wiphy_private *caps = container_of(rtk,
+					struct realtek_wiphy_private, rtk);
+	/* osdep registers the wiphy before set_mib_default(). The zeroed policy
+	 * MIMO_TR_mode is RF_1T1R, not an initialized one-stream preference.
+	 * Advertise the hardware capability discovered during bus probing;
+	 * reading get_rf_mimo_mode() here silently restricted a 2T2R AP to MCS7.
+	 */
+	int rf_mode = priv->pshare->phw->MIMO_TR_hw_support;
 	BOOLEAN band_2gig = false, band_5gig = false;
 	int ret;
 #ifdef EN_EFUSE
@@ -8669,8 +8696,12 @@ int realtek_cfg80211_init(struct rtknl *rtk,struct rtl8192cd_priv *priv)
 	 */
 	if (band_2gig)
 	{
-		wiphy->bands[IEEE80211_BAND_2GHZ] = &realtek_band_2ghz;
-		switch (get_rf_mimo_mode(priv))
+		/* RF-specific capability edits belong to this wiphy, not the shared
+		 * template (a 1T registration must not reduce a later 2T radio).
+		 */
+		caps->band_2g = realtek_band_2ghz;
+		wiphy->bands[IEEE80211_BAND_2GHZ] = &caps->band_2g;
+		switch (rf_mode)
 		{
 		case RF_1T1R:
 			wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap.mcs.rx_highest = cpu_to_le16(150);
@@ -8679,7 +8710,10 @@ int realtek_cfg80211_init(struct rtknl *rtk,struct rtl8192cd_priv *priv)
 			wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap.mcs.rx_mask[2] = 0;
 			break;
 		case RF_2T2R:
-			/* skip default setting */
+			wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap.mcs.rx_highest = cpu_to_le16(300);
+			wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap.mcs.rx_mask[0] = 0xff;
+			wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap.mcs.rx_mask[1] = 0xff;
+			wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap.mcs.rx_mask[2] = 0;
 			break;
 		case RF_3T3R:
 			wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap.mcs.rx_highest = cpu_to_le16(450);
@@ -8693,12 +8727,18 @@ int realtek_cfg80211_init(struct rtknl *rtk,struct rtl8192cd_priv *priv)
 		}
 		wiphy->iface_combinations = &rtk_2g_comb;
 		wiphy->n_iface_combinations = 1;
+		pr_info("rtl8192cd: 2G RF mode=%d HT RX MCS=%02x%02x%02x\n",
+			rf_mode,
+			wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap.mcs.rx_mask[0],
+			wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap.mcs.rx_mask[1],
+			wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap.mcs.rx_mask[2]);
 	}	
 
 	if (band_5gig)
 	{
-		wiphy->bands[IEEE80211_BAND_5GHZ] = &realtek_band_5ghz;
-		switch (get_rf_mimo_mode(priv))
+		caps->band_5g = realtek_band_5ghz;
+		wiphy->bands[IEEE80211_BAND_5GHZ] = &caps->band_5g;
+		switch (rf_mode)
 		{
 		case RF_1T1R:
 			wiphy->bands[IEEE80211_BAND_5GHZ]->ht_cap.mcs.rx_highest = cpu_to_le16(150);

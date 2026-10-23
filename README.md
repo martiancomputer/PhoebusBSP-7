@@ -18,9 +18,10 @@ Linux **7.3-rc3 has been booted and exercised on the RTL9607C hardware**.
 
 Linux 7.3 final has now booted with WPA3 connections on both radios after
 correcting firewall startup and preserving hostapd's RSN element in the 2.4 GHz
-driver. The later hwmon parent-device fix still needs sensor validation on the
-board. Off-device logging preserves evidence for the separate long-run freeze
-and FC internal-table exhaustion investigations; neither is declared solved.
+driver. The hwmon parent-device fix has also been validated by reading the
+SoC temperature sensor on the board. Off-device logging preserves evidence for
+the separate long-run freeze and FC internal-table exhaustion investigations;
+neither is declared solved.
 
 The current mainline image completed a roughly **5-hour continuous hardware run**
 with the kernel and router userspace active. The run ended when the Linux
@@ -53,6 +54,21 @@ The BSP carries the kernel-version-specific part of the port:
 
 The shared SDK carries the vendor source snapshot, s6 rootfs, networking policy,
 wireless configuration, provisioning and board tooling.
+
+The AX10/AX1500 v3 board overlay now uses its stock LED and button wiring.
+Seven software-PWM channels expose LED brightness from 0 to 255 at 200 Hz;
+power defaults on and the other indicators default off. The timer and pattern
+LED triggers are available for later sequences. Full-on/off states stop the
+PWM toggling timer. Simultaneous dimming on all seven channels has been
+visually validated with matching kernel duty-cycle readback; its effect under
+heavy network load remains unbenchmarked. `python3 tools/check-led-pwm.py` checks the compiled DTB wiring,
+polarity, button isolation and software-PWM endpoint behavior.
+
+FC starts with learning disabled until userspace reads the NIC's physical WAN
+mask and verifies the accelerator policy. The normal boot and `rtk-fc load`
+default is mode 1 (hardware acceleration with software fallback); `hwnat=N`
+or an explicit load argument overrides it. The WAN-mask correction has been
+checked on the board, but long-run stability remains a separate test.
 
 ## Repository layout
 
@@ -307,6 +323,61 @@ The operating rule is simple:
 > the current BSP-7 kernel.
 
 This keeps hardware debugging separate from upstream API churn.
+
+## Board status indicators
+
+The board's seven active-low channels use 200 Hz GPIO-backed PWM. The kernel
+flashes all green channels, turns them off, and blinks power until `/init`
+signals userspace readiness. The `leds` s6 service then handles independent
+radio, WAN, LAN and VPN status without blocking network service startup.
+
+- Each Wi-Fi indicator blinks until its hostapd instance reports `ENABLED`.
+- Internet stays off without WAN carrier, blinks orange while awaiting a DHCP
+  lease and a successful WAN-bound connectivity probe, then becomes green.
+- The aggregate LAN indicator announces a newly connected port with one through
+  four short pulses. The latest connection preempts an earlier announcement;
+  already connected ports do not replay. After a one-second steady interval,
+  a DHCP ACK attributed to that port through the bridge FDB produces one tick.
+- The lock indicator reflects a running Tailscale backend or a recent WireGuard
+  handshake, not merely the existence of a tunnel device.
+
+`python3 tools/test-led-status.py` checks synthetic lease decoding, renewal vs.
+periodic rewrites, numbered announcements, preemption and the DHCP tick.
+`python3 tools/check-led-pwm.py` checks the compiled board wiring and PWM polarity.
+Physical event timing still requires a board test after flashing.
+
+## Optional ephemeral Tailscale
+
+`tools/build-tailscale.sh` builds a pinned official Tailscale source revision for
+big-endian MIPS with static linking. The combined `build/tailscaled-mips` binary
+contains both daemon and CLI; a `tailscale` symlink selects the CLI. The small
+feature set includes kernel routing, NAT traversal, embedded trust roots and
+the notification bus required for interactive authentication.
+
+The binary is intentionally **not** copied into the initramfs. For a RAM-only
+trial, transfer it into a private directory under `/run`, use `--state=mem:`
+and a socket in that directory, and authenticate interactively. The kernel
+configuration includes TUN. Correct system time is required for TLS.
+Log uploads can be disabled with `--no-logs-no-support`. Leave DNS acceptance,
+route acceptance and netfilter management disabled during initial validation;
+no subnet-router, exit-node or SSH service is enabled by this build recipe.
+
+The temporary binary and authentication disappear on reboot. A successful
+build or node login alone does not establish encrypted data-path throughput,
+firewall reachability or reboot persistence.
+
+## 2.4 GHz restart and capabilities
+
+The RTL8192F AP stop callback closes hardware while leaving the netdev
+administratively up. AP startup now reopens that hardware when needed instead
+of repeatedly returning `-EIO` after a hostapd restart. RF-specific HT/VHT
+capability edits are kept per-wiphy, and the 2T2R HT receive mask is explicit.
+Registration derives stream capability from the probed hardware, not the
+zero-initialized MIMO policy field whose defaults are installed only later.
+Boot reports the RF mode and advertised HT mask for comparison with hostapd.
+These correctness changes do not establish that the remaining HT20 throughput
+gap is fixed; channel occupancy, retries and client rates must be compared on
+hardware. WPA3, PMF and hardware encryption remain enabled.
 
 ## Verification discipline
 

@@ -1570,7 +1570,9 @@ rtk_fc_ret_t rtk_fc_wan_portmask_set(rtk_fc_port_mask_t wanpmsk)
 	/****  Other configuration ****/
 
 	//reflash ACL
-	_rtk_rg_aclAndCfReservedRuleAdd(RTK_FC_ACLANDCF_RESERVED_TAIL_END, NULL);
+	ret = _rtk_rg_aclAndCfReservedRuleAdd(RTK_FC_ACLANDCF_RESERVED_TAIL_END, NULL);
+	if (ret != RTK_FC_RET_OK)
+		return ret;
 
 #if defined(CONFIG_RTK_L34_G3_PLATFORM)
 	_rtk_rg_aclAndCfReservedRuleAddSpecial(RTK_CLS_TYPE_USER_ACL_REARRANGE, NULL);

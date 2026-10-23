@@ -13,6 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/compiler.h>
 #include <linux/netdevice.h>
+#include <linux/sysfs.h>
 #include <net/hotdata.h>
 #include <linux/platform_device.h>
 #include <linux/etherdevice.h>
@@ -12108,6 +12109,26 @@ static int rtk_gmac_customize_re_private_data_init(unsigned int gmac, struct dev
 	return 0;
 }
 
+/* Export the same mask that FC's TX hook consumes. Interface suffixes are not
+ * VLAN IDs or reliable physical-port numbers on this driver. */
+static ssize_t rtk_tx_port_mask_show(struct device *device,
+				   struct device_attribute *attr, char *buf)
+{
+	struct net_device *dev = to_net_dev(device);
+
+	return sysfs_emit(buf, "0x%x\n", READ_ONCE(DEVPRIV(dev)->txPortMask));
+}
+static DEVICE_ATTR_RO(rtk_tx_port_mask);
+
+static struct attribute *rtk_port_attrs[] = {
+	&dev_attr_rtk_tx_port_mask.attr,
+	NULL,
+};
+
+static const struct attribute_group rtk_port_group = {
+	.attrs = rtk_port_attrs,
+};
+
 static int rtk_gmac_register_root_netdev(unsigned int base, int irq)
 {
 	struct net_device *dev_temp;
@@ -12122,6 +12143,7 @@ static int rtk_gmac_register_root_netdev(unsigned int base, int irq)
 
 	sprintf(dev_temp->name, rtl8686_dev_table[0].ifname);
 	dev_temp->netdev_ops = &rtl_netdevops;
+	dev_temp->sysfs_groups[0] = &rtk_port_group;
 	dev_temp->watchdog_timeo = TX_TIMEOUT;
 
 #ifdef CONFIG_REALTEK_HW_LSO
@@ -12216,6 +12238,7 @@ static int rtk_gmac_register_other_netdev(void)
 		if (ROOTDEV->dev.parent)
 			SET_NETDEV_DEV(dev, ROOTDEV->dev.parent);
 		dev->netdev_ops = &rtl_netdevops;
+		dev->sysfs_groups[0] = &rtk_port_group;
 		dev->watchdog_timeo = TX_TIMEOUT;
 		// priv data setting
 		switch(rtl8686_dev_table[i].ifflag)
