@@ -328,12 +328,21 @@ This keeps hardware debugging separate from upstream API churn.
 
 The board's seven active-low channels use 200 Hz GPIO-backed PWM. The kernel
 flashes all green channels, turns them off, and blinks power until `/init`
-signals userspace readiness. The `leds` s6 service then handles independent
+signals userspace readiness. The `gpio-daemon` s6 service then handles independent
 radio, WAN, LAN and VPN status without blocking network service startup.
 
-- Each Wi-Fi indicator blinks until its hostapd instance reports `ENABLED`.
+The native C process blocks in epoll on RTNETLINK, persistent hostapd controls,
+and `/run/phoebus/gpio.sock`. There are no recurring shell polling workers.
+Protected s6/DHCP/hotplug callbacks use the bounded `gpioctl` API. One timerfd
+services animations and bounded connectivity probes; steady LEDs have no timer.
+See [the API](sdk/gpio/API.md) and [architecture](sdk/gpio/ARCHITECTURE.md).
+
+- Each Wi-Fi indicator blinks at service startup and becomes solid only when
+  hostapd reports `ENABLED`; service start alone cannot falsely assert readiness.
 - Internet stays off without WAN carrier, blinks orange while awaiting a DHCP
-  lease and a successful WAN-bound connectivity probe, then becomes green.
+  lease, turns solid orange while connectivity is unconfirmed, then green on
+  a successful WAN-bound native ICMP probe. Three consecutive failures, not a
+  single lost reply, revoke online status. Probes run only with carrier/address.
 - The aggregate LAN indicator announces a newly connected port with one through
   four short pulses. The latest connection preempts an earlier announcement;
   already connected ports do not replay. After a one-second steady interval,

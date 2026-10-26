@@ -14,8 +14,8 @@ cflags-$(CONFIG_RTK_SOC_RTL9607C) += -I$(srctree)/arch/mips/rtl9607c/
 
 obj-y := setup.o irq.o prom.o timer.o promlib.o dma.o
 obj-y += init_l2cache.o
-obj-$(CONFIG_HWMON) += phoebus_hwmon.o
-obj-$(CONFIG_LEDS_PWM) += phoebus_led_boot.o
+obj-$(CONFIG_HWMON) += hwmon.o
+obj-$(CONFIG_LEDS_PWM) += leds-boot.o
 #obj-$(CONFIG_RTL8686_SWITCH) += bspgpio.o dying_gasp.o
 obj-$(CONFIG_RTL9603CVD_SERIES) += 9603cvd_scache.o 9603cvd_scache_init.o 9603cvd_usb.o 9603cvd_pci.o
 obj-$(CONFIG_OF)  += of.o

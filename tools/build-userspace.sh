@@ -391,13 +391,28 @@ done
 # usr/share/udhcpc/default.script is what `udhcpc -s` execs; without it the WAN
 # can obtain a lease but never configure the interface.
 if [ -d "$BSP/sdk/rootfs/usr" ]; then
-	say "sdk rootfs/usr (udhcpc default.script, phoebus-check)"
+	say "sdk rootfs/usr (udhcpc default.script, sys-check, sys-diag)"
 	cp -a "$BSP/sdk/rootfs/usr/." "$OUT/usr/"
 	[ -f "$OUT/usr/share/udhcpc/default.script" ] && chmod 0755 "$OUT/usr/share/udhcpc/default.script"
-	[ -f "$OUT/usr/bin/phoebus-check" ] && chmod 0755 "$OUT/usr/bin/phoebus-check"
+	[ -f "$OUT/usr/bin/sys-check" ] && chmod 0755 "$OUT/usr/bin/sys-check"
+	[ -f "$OUT/usr/bin/sys-diag" ] && chmod 0755 "$OUT/usr/bin/sys-diag"
 fi
 
 # --- 10. guard: every binary the boot bundle execs must now exist -----------
+make -C "$BSP/sdk/gpio" CC="${CROSS_COMPILE}gcc" STRIP="${CROSS_COMPILE}strip" \
+	DESTDIR="$OUT" install
+# Staging trees may predate the native event daemon. Remove only the retired
+# helpers/service, never unrelated user files or the board LED kernel driver.
+for retired in phoebus-leds phoebus-led-event phoebus-led-lease; do
+	rm -f "$OUT/usr/sbin/$retired"
+done
+if [ -d "$OUT/etc/s6/source/leds" ]; then
+	rm -f "$OUT/etc/s6/source/leds/run" "$OUT/etc/s6/source/leds/type" "$OUT/etc/s6/source/leds/dependencies"
+	rmdir "$OUT/etc/s6/source/leds" 2>/dev/null || true
+fi
+chmod 0640 "$OUT/etc/phoebus/gpio.conf"
+chmod 0755 "$OUT/etc/s6/source/gpio-daemon/run"
+
 # This is the check whose absence let hostapd/dropbear/iptables ship missing.
 #
 # The service loop below derives the binary from each run script's `exec` line

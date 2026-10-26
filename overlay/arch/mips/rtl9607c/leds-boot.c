@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Board boot indication; userspace takes ownership after the flash/off cycle. */
+/* Boot LED indication; userspace takes ownership after the flash/off cycle. */
 #include <linux/device.h>
 #include <linux/leds.h>
 #include <linux/module.h>

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Read-only bridge to the board SDK's initialized/calibrated SoC sensor. */
+/* Hardware monitoring: read-only bridge to the initialized SoC sensor. */
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/hwmon.h>
