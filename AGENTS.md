@@ -22,3 +22,5 @@ Never commit passwords, tokens, keys, Wi-Fi credentials, cookies, authentication
 Before every commit, inspect `git diff --cached`, run `git diff --cached --check`, and scan staged additions and author/committer metadata for private values. Before every push, inspect the entire outgoing range and any new SDK pin, and confirm the pinned SDK commit is on its remote. If sensitive data is in history, a new redaction commit is insufficient: stop and coordinate history rewriting and any credential rotation. Force-push only when explicitly authorized, against a verified ref. Never put raw local logs, paths, or identifiers into public documentation or commit messages.
 
 Use ignored local configuration or a secret manager for runtime secrets. Ask the user when a value might be technically necessary but its publication is uncertain.
+
+- **Optional AI model identification (non-blocking):** When an AI agent creates a commit, it is encouraged to identify its actual model in the commit message (for example, `Model: GPT-6.1`, `Model: Astra 6`, or `Model: Opus 5.5`). If the model name is unavailable, omit it; this guideline must never delay or prevent a commit.
